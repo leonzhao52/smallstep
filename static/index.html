@@ -4,6 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>个人 Agent</title>
+  <!-- Markdown 渲染：marked 转换 + DOMPurify 净化（防 XSS）+ highlight.js 代码高亮 -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/highlight.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -60,6 +65,51 @@
       background: #007aff; color: #fff; font-size: 14px; cursor: pointer;
     }
     #send:disabled { background: #c7c7cc; cursor: not-allowed; }
+    /* Markdown 渲染样式 */
+    .bubble.md { white-space: normal; }
+    .bubble.md > :first-child { margin-top: 0; }
+    .bubble.md > :last-child { margin-bottom: 0; }
+    .bubble.md p { margin: 0.5em 0; }
+    .bubble.md h1, .bubble.md h2, .bubble.md h3,
+    .bubble.md h4, .bubble.md h5, .bubble.md h6 {
+      margin: 0.8em 0 0.4em; line-height: 1.3; font-weight: 600;
+    }
+    .bubble.md h1 { font-size: 1.4em; }
+    .bubble.md h2 { font-size: 1.25em; }
+    .bubble.md h3 { font-size: 1.1em; }
+    .bubble.md ul, .bubble.md ol { margin: 0.5em 0; padding-left: 1.5em; }
+    .bubble.md li { margin: 0.25em 0; }
+    .bubble.md code {
+      background: rgba(0, 0, 0, 0.06); padding: 0.15em 0.4em;
+      border-radius: 4px; font-size: 0.9em;
+      font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
+    }
+    .bubble.md pre {
+      background: #f6f8fa; border: 1px solid #e5e5ea; border-radius: 8px;
+      padding: 12px; overflow-x: auto; margin: 0.6em 0;
+    }
+    .bubble.md pre code {
+      background: none; padding: 0; font-size: 0.88em; line-height: 1.5;
+    }
+    .bubble.md a { color: #007aff; }
+    .bubble.md blockquote {
+      border-left: 3px solid #d1d1d6; padding-left: 0.8em;
+      margin: 0.5em 0; color: #6e6e73;
+    }
+    .bubble.md table { border-collapse: collapse; margin: 0.6em 0; }
+    .bubble.md th, .bubble.md td {
+      border: 1px solid #d1d1d6; padding: 6px 10px; font-size: 0.92em;
+    }
+    /* 代码块复制按钮 */
+    .code-wrap { position: relative; }
+    .copy-btn {
+      position: absolute; top: 6px; right: 6px; padding: 3px 8px;
+      font-size: 11px; border: 1px solid #d1d1d6; border-radius: 5px;
+      background: #fff; color: #6e6e73; cursor: pointer; opacity: 0;
+      transition: opacity 0.15s;
+    }
+    .code-wrap:hover .copy-btn { opacity: 1; }
+    .copy-btn:hover { background: #f0f0f2; }
   </style>
 </head>
 <body>
@@ -105,7 +155,9 @@
       const res = await fetch(`/api/conversations/${id}`);
       if (!res.ok) return;
       const conv = await res.json();
-      (conv.messages || []).forEach((m) => addBubble(m.role, m.content));
+      (conv.messages || []).forEach((m) =>
+        addBubble(m.role, m.content, m.role === 'assistant') // 模型消息渲染 Markdown
+      );
       loadConversations();
       scrollToBottom();
     }
@@ -119,13 +171,65 @@
       inputEl.focus();
     }
 
+    // ---------- Markdown 渲染 ----------
+    // marked：把 Markdown 转 HTML，代码块用 highlight.js 高亮
+    marked.setOptions({
+      gfm: true,        // GitHub 风格 Markdown（支持表格、删除线等）
+      breaks: true,     // 单个换行也当 <br>
+      highlight: function (code, lang) {
+        if (lang && hljs.getLanguage(lang)) {
+          try { return hljs.highlight(code, { language: lang }).value; } catch {}
+        }
+        return hljs.highlightAuto(code).value;
+      },
+    });
+
+    // 渲染 Markdown 并净化（防 XSS：过滤 script/事件属性等危险内容）
+    function renderMarkdown(text) {
+      const rawHtml = marked.parse(text || '');
+      return DOMPurify.sanitize(rawHtml);
+    }
+
+    // 给每个代码块包一层，加"复制"按钮
+    function enhanceCodeBlocks(container) {
+      container.querySelectorAll('pre').forEach((pre) => {
+        if (pre.parentElement.classList.contains('code-wrap')) return; // 已处理
+        const wrap = document.createElement('div');
+        wrap.className = 'code-wrap';
+        pre.replaceWith(wrap);
+        wrap.appendChild(pre);
+
+        const btn = document.createElement('button');
+        btn.className = 'copy-btn';
+        btn.textContent = '复制';
+        btn.onclick = () => {
+          const code = pre.querySelector('code');
+          navigator.clipboard.writeText(code ? code.textContent : pre.textContent);
+          btn.textContent = '已复制';
+          setTimeout(() => { btn.textContent = '复制'; }, 1500);
+        };
+        wrap.appendChild(btn);
+      });
+    }
+
+    // 把一段 Markdown 文本渲染进某个气泡
+    function setBubbleMarkdown(bubble, text) {
+      bubble.classList.add('md');
+      bubble.innerHTML = renderMarkdown(text);
+      enhanceCodeBlocks(bubble);
+    }
+
     // ---------- 消息渲染 ----------
-    function addBubble(role, content) {
+    function addBubble(role, content, useMarkdown = false) {
       const wrap = document.createElement('div');
       wrap.className = `msg ${role}`;
       const bubble = document.createElement('div');
       bubble.className = 'bubble';
-      bubble.textContent = content || '';
+      if (useMarkdown) {
+        setBubbleMarkdown(bubble, content || '');
+      } else {
+        bubble.textContent = content || '';
+      }
       wrap.appendChild(bubble);
       messagesEl.appendChild(wrap);
       scrollToBottom();
@@ -152,9 +256,9 @@
       busy = true;
       sendBtn.disabled = true;
       inputEl.value = '';
-      addBubble('user', text);
+      addBubble('user', text); // 用户消息保持纯文本
 
-      const assistantBubble = addBubble('assistant', '');
+      const assistantBubble = addBubble('assistant', '', true); // 模型回复走 Markdown
       let assistantText = '';
 
       try {
@@ -205,7 +309,7 @@
       switch (event.type) {
         case 'text_delta':
           setText(getText() + event.content);
-          bubble.textContent = getText();
+          setBubbleMarkdown(bubble, getText()); // 流式期间实时渲染 Markdown
           scrollToBottom();
           break;
         case 'model_fallback':
