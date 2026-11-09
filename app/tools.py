@@ -66,3 +66,15 @@ async def execute(name: str, args_json: str) -> str:
 
 def get_tool(name: str) -> Optional[dict]:
     return TOOLS.get(name)
+
+
+def _load_builtin_tools() -> None:
+    """导入内置工具模块，触发它们的 @register 装饰器完成注册。
+
+    懒加载，避免循环导入（工具模块会 import 本模块的 register）。
+    加新内置工具时在这里补一行 import。
+    """
+    from . import tool_files, tool_web  # noqa: F401
+
+
+_load_builtin_tools()
