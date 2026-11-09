@@ -7,7 +7,11 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from .log import setup_logging
 from .routes import router
+
+# 初始化日志（控制台 INFO + 文件 DEBUG 滚动），必须在导入路由前完成
+setup_logging()
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = PROJECT_ROOT / "static"

@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import logging
 from typing import AsyncGenerator
 
 from openai import (
@@ -22,6 +23,8 @@ from openai import (
 
 from . import llm, providers, tools
 from .config import config
+
+logger = logging.getLogger(__name__)
 
 # 触发回退的异常：连接失败、认证失败、限流、模型不存在、服务端 5xx。
 FALLBACK_EXCEPTIONS = (
@@ -48,11 +51,13 @@ async def run_agent(messages: list[dict]) -> AsyncGenerator[dict, None]:
         return
 
     last_error: Exception | None = None
+    logger.info("开始处理请求，候选模型: %s", [c.label() for c in candidates])
     for cand in candidates:
         try:
             client = providers.get_client(cand.provider)
         except KeyError as e:
             last_error = e
+            logger.warning("provider %s 未配置，跳过：%s", cand.provider, e)
             yield {
                 "type": "model_fallback",
                 "failed": cand.label(),
@@ -61,15 +66,18 @@ async def run_agent(messages: list[dict]) -> AsyncGenerator[dict, None]:
             continue
 
         try:
+            logger.info("尝试候选模型 [%s]", cand.label())
             used_model = None
             async for event in run_single_model(client, cand.model, messages):
                 # 记录实际使用的 model，随 done 事件带出
                 if event.get("type") == "done":
                     used_model = event.get("model")
                 yield event
+            logger.info("候选模型 [%s] 成功完成", cand.label())
             return  # 成功跑完
         except FallbackTriggered as e:
             last_error = e
+            logger.warning("候选模型 [%s] 失败，回退到下一个：%s", cand.label(), e)
             yield {
                 "type": "model_fallback",
                 "failed": cand.label(),
@@ -77,6 +85,7 @@ async def run_agent(messages: list[dict]) -> AsyncGenerator[dict, None]:
             }
             continue
 
+    logger.error("所有候选模型均不可用，最后一个错误：%s", last_error)
     yield {"type": "error", "message": f"所有候选模型均不可用，最后一个错误：{last_error}"}
 
 
@@ -95,6 +104,11 @@ async def run_single_model(
         # tool_calls 按 index 累积（流式里每个 tool_call 分多块到达）
         tool_calls_acc: dict[int, dict] = {}
         emitted_any_text = False
+
+        # 记录本次发送给 LLM 的完整消息（含历史与工具结果）和是否带工具
+        logger.debug("发送给 LLM [%s]，消息数=%d，tools=%s",
+                     model, len(working), bool(tool_schemas))
+        logger.debug("发送内容: %s", working)
 
         try:
             async for chunk in llm.stream_once(client, model, working, tool_schemas):
@@ -126,6 +140,7 @@ async def run_single_model(
         except FALLBACK_EXCEPTIONS as e:
             if emitted_any_text:
                 # 已经输出过部分文本，静默回退会导致内容重复，改为直接报错收尾。
+                logger.warning("LLM [%s] 流式中断（已输出部分文本，不回退）：", model, exc_info=e)
                 yield {
                     "type": "text_delta",
                     "content": f"\n\n[流式中断，未回退：{e}]",
@@ -133,12 +148,18 @@ async def run_single_model(
                 yield {"type": "done", "model": model}
                 return
             # 首块之前失败 -> 干净回退
+            logger.warning("LLM [%s] 首块前失败，将回退：", model, exc_info=e)
             raise FallbackTriggered(str(e)) from e
 
         full_text = "".join(accumulated_text)
 
+        # 记录 LLM 的完整回复
+        logger.debug("LLM [%s] 回复长度=%d", model, len(full_text))
+        logger.debug("回复内容: %s", full_text)
+
         # 没有工具调用 -> 本轮结束
         if not tool_calls_acc:
+            logger.info("LLM [%s] 完成本轮回复（无工具调用）", model)
             yield {"type": "done", "model": model}
             return
 
@@ -160,8 +181,10 @@ async def run_single_model(
         # 逐个执行工具，yield 结果并 append 回 working
         for i in sorted(tool_calls_acc):
             slot = tool_calls_acc[i]
+            logger.info("LLM [%s] 请求工具调用: %s(%s)", model, slot["name"], slot["arguments"])
             yield {"type": "tool_call", "name": slot["name"], "arguments": slot["arguments"]}
             result = await tools.execute(slot["name"], slot["arguments"])
+            logger.debug("工具 %s 返回: %s", slot["name"], result)
             yield {"type": "tool_result", "name": slot["name"], "content": result}
             working.append(
                 {"role": "tool", "tool_call_id": slot["id"], "content": result}

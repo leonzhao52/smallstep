@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -10,6 +11,8 @@ from pydantic import BaseModel
 from . import agent as agent_mod
 from . import storage
 from .config import config
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
@@ -64,6 +67,7 @@ async def chat(req: ChatRequest):
         raise HTTPException(status_code=404, detail="会话不存在")
 
     # 落盘用户消息，并用返回的最新会话组装消息（带上历史）
+    logger.info("收到用户消息 [会话 %s]：%s", req.conversation_id, req.message)
     user_msg = {"role": "user", "content": req.message}
     conv = await storage.append_message(req.conversation_id, user_msg)
     if conv is None:
@@ -85,18 +89,21 @@ async def chat(req: ChatRequest):
                 elif etype == "done":
                     used_model = event.get("model")
                 elif etype == "model_fallback":
-                    used_provider = None  # 回退后由后续 done 决定
+                    logger.warning("模型回退：失败=%s 原因=%s",
+                                   event.get("failed"), event.get("reason"))
 
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
             # 落盘 assistant 消息
             full = "".join(assistant_text_parts)
             if full:
+                logger.info("assistant 回复 [会话 %s, 模型 %s]：%s",
+                            req.conversation_id, used_model, full)
                 await storage.append_message(
                     req.conversation_id, {"role": "assistant", "content": full}
                 )
-            # 记录本次使用的 model（从 done 事件拿，简单起见在下面补写）
         except Exception as e:  # 兜底：不要让连接挂死
+            logger.exception("chat 处理异常 [会话 %s]", req.conversation_id)
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
