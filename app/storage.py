@@ -73,9 +73,19 @@ async def append_message(conv_id: str, message: dict) -> Optional[Conversation]:
     if conv is None:
         return None
     conv.messages.append(message)
-    # 首条用户消息作为标题
+    # 首条用户消息作为兜底标题（后续可能被 LLM 生成的标题覆盖）
     if not conv.title or conv.title == "新会话":
         if message.get("role") == "user":
             conv.title = (message.get("content") or "")[:30] or "新会话"
+    await save(conv)
+    return conv
+
+
+async def update_title(conv_id: str, title: str) -> Optional[Conversation]:
+    """更新会话标题（用于自动生成的标题覆盖兜底标题）。"""
+    conv = await get(conv_id)
+    if conv is None:
+        return None
+    conv.title = title.strip()[:50] or conv.title
     await save(conv)
     return conv

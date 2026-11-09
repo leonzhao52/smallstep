@@ -1,6 +1,7 @@
 """API 路由：SSE 聊天、会话管理、模型列表。"""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -74,6 +75,8 @@ async def chat(req: ChatRequest):
         raise HTTPException(status_code=404, detail="会话不存在")
 
     messages = list(conv.messages)
+    # 首轮对话（标题还是「新会话」）时，结束后自动生成标题
+    is_first_exchange = conv.title in ("", "新会话")
 
     async def event_stream():
         assistant_text_parts: list[str] = []
@@ -102,6 +105,13 @@ async def chat(req: ChatRequest):
                 await storage.append_message(
                     req.conversation_id, {"role": "assistant", "content": full}
                 )
+
+            # 首轮对话：后台生成标题并推送（不阻塞已结束的响应流）
+            if is_first_exchange:
+                title = await agent_mod.generate_title(req.message)
+                if title:
+                    await storage.update_title(req.conversation_id, title)
+                    yield f"data: {json.dumps({'type': 'title_update', 'title': title}, ensure_ascii=False)}\n\n"
         except Exception as e:  # 兜底：不要让连接挂死
             logger.exception("chat 处理异常 [会话 %s]", req.conversation_id)
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"

@@ -324,6 +324,9 @@
         case 'error':
           addNotice(event.message, true);
           break;
+        case 'title_update':
+          loadConversations(); // 标题生成完成，刷新侧栏列表
+          break;
         case 'done':
           break;
       }

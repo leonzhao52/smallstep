@@ -89,6 +89,43 @@ async def run_agent(messages: list[dict]) -> AsyncGenerator[dict, None]:
     yield {"type": "error", "message": f"所有候选模型均不可用，最后一个错误：{last_error}"}
 
 
+async def generate_title(user_message: str) -> str | None:
+    """用 LLM 根据首条用户消息生成一个简短会话标题（非流式）。
+
+    复用 model_priority 的回退链：依次尝试候选模型，第一个成功就返回。
+    生成失败返回 None，由调用方保留「截断首条消息」的兜底标题。
+    """
+    candidates = config.get_model_candidates()
+    prompt = (
+        "请根据下面的用户消息，生成一个不超过 16 个字的简短会话标题。"
+        "只输出标题本身，不要任何引号、标点或解释。\n\n"
+        f"用户消息：{user_message[:200]}"
+    )
+    messages = [{"role": "user", "content": prompt}]
+
+    for cand in candidates:
+        try:
+            client = providers.get_client(cand.provider)
+        except KeyError:
+            continue
+        try:
+            resp = await client.chat.completions.create(
+                model=cand.model, messages=messages, max_tokens=30, temperature=0.3,
+            )
+            title = (resp.choices[0].message.content or "").strip().strip('"「」【】')
+            # 取第一行，去掉多余空白，限制长度
+            title = title.splitlines()[0].strip()[:30] if title else ""
+            if title:
+                logger.info("生成会话标题 [%s]：%s", cand.label(), title)
+                return title
+        except Exception as e:
+            logger.warning("生成标题 [%s] 失败：%s", cand.label(), e)
+            continue
+
+    logger.warning("所有候选模型生成标题均失败，保留兜底标题")
+    return None
+
+
 async def run_single_model(
     client, model: str, messages: list[dict]
 ) -> AsyncGenerator[dict, None]:
