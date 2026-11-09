@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>个人 Agent</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+      display: flex; height: 100vh; background: #f5f5f7; color: #1d1d1f;
+    }
+    /* 侧栏 */
+    #sidebar {
+      width: 260px; background: #fff; border-right: 1px solid #e5e5ea;
+      display: flex; flex-direction: column;
+    }
+    #new-chat {
+      margin: 12px; padding: 10px; border: none; border-radius: 8px;
+      background: #007aff; color: #fff; font-size: 14px; cursor: pointer;
+    }
+    #new-chat:hover { background: #0066d6; }
+    #conv-list { flex: 1; overflow-y: auto; padding: 0 8px; }
+    .conv-item {
+      padding: 10px 12px; border-radius: 8px; cursor: pointer;
+      font-size: 13px; margin-bottom: 4px; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
+    }
+    .conv-item:hover { background: #f0f0f2; }
+    .conv-item.active { background: #e5f0ff; }
+    /* 主区 */
+    #main { flex: 1; display: flex; flex-direction: column; }
+    #messages { flex: 1; overflow-y: auto; padding: 24px; }
+    .msg { margin-bottom: 16px; display: flex; }
+    .msg.user { justify-content: flex-end; }
+    .bubble {
+      max-width: 70%; padding: 10px 14px; border-radius: 14px;
+      font-size: 14px; line-height: 1.5; white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .msg.user .bubble { background: #007aff; color: #fff; }
+    .msg.assistant .bubble { background: #fff; border: 1px solid #e5e5ea; }
+    .notice {
+      text-align: center; font-size: 12px; color: #ff9500; margin: 8px 0;
+    }
+    .notice.error { color: #ff3b30; }
+    /* 输入区 */
+    #input-area {
+      display: flex; gap: 8px; padding: 16px; background: #fff;
+      border-top: 1px solid #e5e5ea;
+    }
+    #input {
+      flex: 1; padding: 10px 14px; border: 1px solid #d1d1d6;
+      border-radius: 10px; font-size: 14px; outline: none; resize: none;
+      font-family: inherit; max-height: 120px;
+    }
+    #input:focus { border-color: #007aff; }
+    #send {
+      padding: 0 20px; border: none; border-radius: 10px;
+      background: #007aff; color: #fff; font-size: 14px; cursor: pointer;
+    }
+    #send:disabled { background: #c7c7cc; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <button id="new-chat">+ 新会话</button>
+    <div id="conv-list"></div>
+  </div>
+  <div id="main">
+    <div id="messages"></div>
+    <div id="input-area">
+      <textarea id="input" rows="1" placeholder="输入消息，Enter 发送"></textarea>
+      <button id="send">发送</button>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const messagesEl = $('messages');
+    const convListEl = $('conv-list');
+    const inputEl = $('input');
+    const sendBtn = $('send');
+
+    let currentConvId = null;
+    let busy = false;
+
+    // ---------- 会话列表 ----------
+    async function loadConversations() {
+      const res = await fetch('/api/conversations');
+      const convs = await res.json();
+      convListEl.innerHTML = '';
+      convs.forEach((c) => {
+        const div = document.createElement('div');
+        div.className = 'conv-item' + (c.id === currentConvId ? ' active' : '');
+        div.textContent = c.title || '新会话';
+        div.onclick = () => selectConversation(c.id);
+        convListEl.appendChild(div);
+      });
+    }
+
+    async function selectConversation(id) {
+      currentConvId = id;
+      messagesEl.innerHTML = '';
+      const res = await fetch(`/api/conversations/${id}`);
+      if (!res.ok) return;
+      const conv = await res.json();
+      (conv.messages || []).forEach((m) => addBubble(m.role, m.content));
+      loadConversations();
+      scrollToBottom();
+    }
+
+    async function newConversation() {
+      const res = await fetch('/api/conversations', { method: 'POST' });
+      const conv = await res.json();
+      currentConvId = conv.id;
+      messagesEl.innerHTML = '';
+      loadConversations();
+      inputEl.focus();
+    }
+
+    // ---------- 消息渲染 ----------
+    function addBubble(role, content) {
+      const wrap = document.createElement('div');
+      wrap.className = `msg ${role}`;
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble';
+      bubble.textContent = content || '';
+      wrap.appendChild(bubble);
+      messagesEl.appendChild(wrap);
+      scrollToBottom();
+      return bubble;
+    }
+
+    function addNotice(text, isError = false) {
+      const div = document.createElement('div');
+      div.className = 'notice' + (isError ? ' error' : '');
+      div.textContent = text;
+      messagesEl.appendChild(div);
+      scrollToBottom();
+    }
+
+    function scrollToBottom() {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    // ---------- 发送 + 流式 ----------
+    async function send() {
+      const text = inputEl.value.trim();
+      if (!text || busy || !currentConvId) return;
+
+      busy = true;
+      sendBtn.disabled = true;
+      inputEl.value = '';
+      addBubble('user', text);
+
+      const assistantBubble = addBubble('assistant', '');
+      let assistantText = '';
+
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversation_id: currentConvId, message: text }),
+        });
+
+        if (!res.ok || !res.body) {
+          throw new Error(`请求失败: ${res.status}`);
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          // SSE 事件以空行分隔
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop(); // 最后一段可能不完整，留到下一轮
+
+          for (const part of parts) {
+            const line = part.trim();
+            if (!line.startsWith('data:')) continue;
+            const dataStr = line.slice(5).trim();
+            if (!dataStr) continue;
+            let event;
+            try { event = JSON.parse(dataStr); } catch { continue; }
+            handleEvent(event, assistantBubble, () => assistantText, (t) => { assistantText = t; });
+          }
+        }
+      } catch (err) {
+        addNotice(`出错了：${err.message}`, true);
+      } finally {
+        busy = false;
+        sendBtn.disabled = false;
+        inputEl.focus();
+        loadConversations();
+      }
+    }
+
+    function handleEvent(event, bubble, getText, setText) {
+      switch (event.type) {
+        case 'text_delta':
+          setText(getText() + event.content);
+          bubble.textContent = getText();
+          scrollToBottom();
+          break;
+        case 'model_fallback':
+          addNotice(`模型 ${event.failed} 不可用，已切换…`);
+          break;
+        case 'tool_call':
+          addNotice(`调用工具：${event.name}`);
+          break;
+        case 'tool_result':
+          addNotice(`工具 ${event.name} 返回结果`);
+          break;
+        case 'error':
+          addNotice(event.message, true);
+          break;
+        case 'done':
+          break;
+      }
+    }
+
+    // ---------- 事件绑定 ----------
+    sendBtn.onclick = send;
+    $('new-chat').onclick = newConversation;
+    inputEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        send();
+      }
+    });
+    // 自适应高度
+    inputEl.addEventListener('input', () => {
+      inputEl.style.height = 'auto';
+      inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+    });
+
+    // 初始化
+    (async () => {
+      await loadConversations();
+      // 没有会话时自动建一个
+      const res = await fetch('/api/conversations');
+      const convs = await res.json();
+      if (convs.length === 0) {
+        await newConversation();
+      }
+    })();
+  </script>
+</body>
+</html>

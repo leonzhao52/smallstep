@@ -1,0 +1,23 @@
+# 复制为 config.yaml。密钥不写在这里，用 ${ENV_VAR} 从 .env 注入。
+# 支持 ${VAR} 和 ${VAR:-默认值} 两种占位符。
+
+providers:
+  openai:
+    base_url: https://api.openai.com/v1
+    api_key: ${OPENAI_API_KEY}
+  deepseek:
+    base_url: https://api.deepseek.com/v1
+    api_key: ${DEEPSEEK_API_KEY}
+  local:
+    base_url: http://localhost:11434/v1
+    api_key: ${LOCAL_API_KEY:-ollama}
+
+# 有优先级的 model 候选列表：从上到下依次尝试，当前 model 不可用时自动回退到下一个。
+# 想验证回退，可以把第一个故意配成无效 model（比如填个不存在的名字）。
+model_priority:
+  - provider: openai
+    model: gpt-4o-mini
+  - provider: deepseek
+    model: deepseek-chat
+  - provider: local
+    model: llama3

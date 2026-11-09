@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+openai>=1.40
+pyyaml
+python-dotenv
+pydantic
