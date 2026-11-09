@@ -19,6 +19,10 @@ class Conversation(BaseModel):
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
     messages: list[dict] = Field(default_factory=list)
+    # 状态：active 正常 / archived 归档 / trashed 已进回收站（软删除）
+    status: str = "active"
+    # 软删除时间，用于回收站展示与「30 天后自动清理」
+    deleted_at: Optional[float] = None
     # 记录最近一次实际使用的 provider/model，便于排查
     last_provider: Optional[str] = None
     last_model: Optional[str] = None
@@ -54,8 +58,11 @@ async def get(conv_id: str) -> Optional[Conversation]:
     return Conversation(**data)
 
 
-async def list_all() -> list[Conversation]:
-    """返回所有会话，按更新时间倒序。"""
+async def list_all(status: Optional[str] = None) -> list[Conversation]:
+    """返回会话，按更新时间倒序。
+
+    status=None 返回全部（含归档/回收站）；指定 'active'/'archived'/'trashed' 则只返回该状态。
+    """
     _ensure_dir()
     convs: list[Conversation] = []
     for p in CONV_DIR.glob("*.json"):
@@ -64,6 +71,8 @@ async def list_all() -> list[Conversation]:
             convs.append(Conversation(**data))
         except (json.JSONDecodeError, Exception):
             continue  # 跳过损坏文件
+    if status is not None:
+        convs = [c for c in convs if c.status == status]
     convs.sort(key=lambda c: c.updated_at, reverse=True)
     return convs
 
@@ -89,3 +98,41 @@ async def update_title(conv_id: str, title: str) -> Optional[Conversation]:
     conv.title = title.strip()[:50] or conv.title
     await save(conv)
     return conv
+
+
+async def rename(conv_id: str, title: str) -> Optional[Conversation]:
+    """用户手动重命名会话。"""
+    conv = await get(conv_id)
+    if conv is None:
+        return None
+    conv.title = title.strip()[:50] or conv.title
+    await save(conv)
+    return conv
+
+
+async def set_status(conv_id: str, status: str) -> Optional[Conversation]:
+    """切换会话状态：active / archived / trashed。
+
+    进回收站时记录 deleted_at；离开回收站（恢复）时清空 deleted_at。
+    """
+    if status not in ("active", "archived", "trashed"):
+        return None
+    conv = await get(conv_id)
+    if conv is None:
+        return None
+    conv.status = status
+    conv.deleted_at = time.time() if status == "trashed" else None
+    await save(conv)
+    return conv
+
+
+async def delete_forever(conv_id: str) -> bool:
+    """从回收站永久删除：直接删掉磁盘文件。返回是否成功。"""
+    p = _path(conv_id)
+    if not p.exists():
+        return False
+    try:
+        p.unlink()
+        return True
+    except OSError:
+        return False

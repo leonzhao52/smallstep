@@ -23,6 +23,10 @@ class ChatRequest(BaseModel):
     message: str
 
 
+class RenameRequest(BaseModel):
+    title: str
+
+
 @router.get("/models")
 async def list_models():
     """返回当前有优先级的 model 候选列表。"""
@@ -32,13 +36,16 @@ async def list_models():
 
 
 @router.get("/conversations")
-async def list_conversations():
-    convs = await storage.list_all()
+async def list_conversations(status: str = "active"):
+    """按状态列出会话：active / archived / trashed。"""
+    convs = await storage.list_all(status=status)
     return [
         {
             "id": c.id,
             "title": c.title,
+            "status": c.status,
             "updated_at": c.updated_at,
+            "deleted_at": c.deleted_at,
             "last_model": c.last_model,
         }
         for c in convs
@@ -59,6 +66,49 @@ async def create_conversation():
     return conv.model_dump()
 
 
+@router.post("/conversations/{conv_id}/rename")
+async def rename_conversation(conv_id: str, req: RenameRequest):
+    conv = await storage.rename(conv_id, req.title)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return conv.model_dump()
+
+
+@router.post("/conversations/{conv_id}/archive")
+async def archive_conversation(conv_id: str):
+    conv = await storage.set_status(conv_id, "archived")
+    if conv is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return conv.model_dump()
+
+
+@router.post("/conversations/{conv_id}/trash")
+async def trash_conversation(conv_id: str):
+    """软删除：移入回收站。"""
+    conv = await storage.set_status(conv_id, "trashed")
+    if conv is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return conv.model_dump()
+
+
+@router.post("/conversations/{conv_id}/restore")
+async def restore_conversation(conv_id: str):
+    """从回收站恢复为 active。"""
+    conv = await storage.set_status(conv_id, "active")
+    if conv is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return conv.model_dump()
+
+
+@router.delete("/conversations/{conv_id}")
+async def delete_conversation_forever(conv_id: str):
+    """永久删除（仅回收站内可调）：直接删掉磁盘文件。"""
+    ok = await storage.delete_forever(conv_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return {"ok": True}
+
+
 @router.post("/chat")
 async def chat(req: ChatRequest):
     """接收一条用户消息，返回 SSE 事件流。"""
@@ -66,6 +116,8 @@ async def chat(req: ChatRequest):
     conv = await storage.get(req.conversation_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="会话不存在")
+    if conv.status == "trashed":
+        raise HTTPException(status_code=400, detail="该会话已在回收站，请先恢复再继续对话")
 
     # 落盘用户消息，并用返回的最新会话组装消息（带上历史）
     logger.info("收到用户消息 [会话 %s]：%s", req.conversation_id, req.message)

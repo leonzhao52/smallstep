@@ -27,12 +27,34 @@
     #new-chat:hover { background: #0066d6; }
     #conv-list { flex: 1; overflow-y: auto; padding: 0 8px; }
     .conv-item {
-      padding: 10px 12px; border-radius: 8px; cursor: pointer;
-      font-size: 13px; margin-bottom: 4px; white-space: nowrap;
-      overflow: hidden; text-overflow: ellipsis;
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 6px; padding: 8px 10px; border-radius: 8px; cursor: pointer;
+      font-size: 13px; margin-bottom: 4px;
+    }
+    .conv-item .title {
+      flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .conv-item:hover { background: #f0f0f2; }
     .conv-item.active { background: #e5f0ff; }
+    .conv-actions { display: none; gap: 2px; flex-shrink: 0; }
+    .conv-item:hover .conv-actions { display: flex; }
+    .act-btn {
+      border: none; background: transparent; cursor: pointer;
+      font-size: 12px; padding: 2px 4px; border-radius: 4px; color: #6e6e73;
+    }
+    .act-btn:hover { background: #e5e5ea; color: #1d1d1f; }
+    .act-btn.danger:hover { background: #ffeceb; color: #ff3b30; }
+    /* 侧栏分区（归档 / 回收站） */
+    .side-section { border-top: 1px solid #e5e5ea; padding: 8px 8px 4px; }
+    .side-toggle {
+      font-size: 12px; color: #6e6e73; cursor: pointer; padding: 6px 4px;
+      user-select: none; border-radius: 6px;
+    }
+    .side-toggle:hover { background: #f0f0f2; }
+    .side-list { display: none; max-height: 200px; overflow-y: auto; }
+    .side-list.open { display: block; }
+    .side-list .conv-item { font-size: 12px; }
+    .empty-hint { font-size: 12px; color: #c7c7cc; padding: 4px 6px; }
     /* 主区 */
     #main { flex: 1; display: flex; flex-direction: column; }
     #messages { flex: 1; overflow-y: auto; padding: 24px; }
@@ -116,6 +138,14 @@
   <div id="sidebar">
     <button id="new-chat">+ 新会话</button>
     <div id="conv-list"></div>
+    <div id="archived-section" class="side-section">
+      <div id="archived-toggle" class="side-toggle">已归档 ▸</div>
+      <div id="archived-list" class="side-list"></div>
+    </div>
+    <div id="trash-section" class="side-section">
+      <div id="trash-toggle" class="side-toggle">回收站 ▸</div>
+      <div id="trash-list" class="side-list"></div>
+    </div>
   </div>
   <div id="main">
     <div id="messages"></div>
@@ -129,6 +159,10 @@
     const $ = (id) => document.getElementById(id);
     const messagesEl = $('messages');
     const convListEl = $('conv-list');
+    const archivedListEl = $('archived-list');
+    const archivedToggleEl = $('archived-toggle');
+    const trashListEl = $('trash-list');
+    const trashToggleEl = $('trash-toggle');
     const inputEl = $('input');
     const sendBtn = $('send');
 
@@ -136,17 +170,109 @@
     let busy = false;
 
     // ---------- 会话列表 ----------
+    // 创建一个会话条目；actions 指定要显示的操作按钮
+    function createConvItem(c, actions) {
+      const div = document.createElement('div');
+      div.className = 'conv-item' + (c.id === currentConvId ? ' active' : '');
+
+      const title = document.createElement('span');
+      title.className = 'title';
+      title.textContent = c.title || '新会话';
+      title.onclick = () => selectConversation(c.id);
+      div.appendChild(title);
+
+      const acts = document.createElement('span');
+      acts.className = 'conv-actions';
+      const btnDefs = {
+        rename:   { text: '✏️', tip: '重命名', cls: '', act: () => renameConversation(c.id, c.title) },
+        archive:  { text: '📦', tip: '归档',   cls: '', act: () => setConvStatus(c.id, 'archive') },
+        trash:    { text: '🗑️', tip: '删除到回收站', cls: 'danger', act: () => setConvStatus(c.id, 'trash') },
+        restore:  { text: '↩️', tip: '恢复',   cls: '', act: () => setConvStatus(c.id, 'restore') },
+        delete:   { text: '❌', tip: '永久删除', cls: 'danger', act: () => deleteForever(c.id) },
+      };
+      actions.forEach((key) => {
+        const d = btnDefs[key];
+        const b = document.createElement('button');
+        b.className = 'act-btn ' + d.cls;
+        b.textContent = d.text;
+        b.title = d.tip;
+        b.onclick = (e) => { e.stopPropagation(); d.act(); };
+        acts.appendChild(b);
+      });
+      div.appendChild(acts);
+      return div;
+    }
+
     async function loadConversations() {
-      const res = await fetch('/api/conversations');
+      // 主列表：active
+      const res = await fetch('/api/conversations?status=active');
       const convs = await res.json();
       convListEl.innerHTML = '';
-      convs.forEach((c) => {
-        const div = document.createElement('div');
-        div.className = 'conv-item' + (c.id === currentConvId ? ' active' : '');
-        div.textContent = c.title || '新会话';
-        div.onclick = () => selectConversation(c.id);
-        convListEl.appendChild(div);
+      if (convs.length === 0) {
+        const hint = document.createElement('div');
+        hint.className = 'empty-hint';
+        hint.textContent = '暂无会话';
+        convListEl.appendChild(hint);
+      }
+      convs.forEach((c) => convListEl.appendChild(createConvItem(c, ['rename', 'archive', 'trash'])));
+
+      // 归档区
+      const resA = await fetch('/api/conversations?status=archived');
+      const archived = await resA.json();
+      archivedListEl.innerHTML = '';
+      if (archived.length === 0) {
+        const hint = document.createElement('div');
+        hint.className = 'empty-hint';
+        hint.textContent = '没有归档会话';
+        archivedListEl.appendChild(hint);
+      }
+      archived.forEach((c) => archivedListEl.appendChild(createConvItem(c, ['rename', 'restore', 'trash'])));
+
+      // 回收站区
+      const resT = await fetch('/api/conversations?status=trashed');
+      const trashed = await resT.json();
+      trashListEl.innerHTML = '';
+      if (trashed.length === 0) {
+        const hint = document.createElement('div');
+        hint.className = 'empty-hint';
+        hint.textContent = '回收站为空';
+        trashListEl.appendChild(hint);
+      }
+      trashed.forEach((c) => trashListEl.appendChild(createConvItem(c, ['restore', 'delete'])));
+    }
+
+    async function renameConversation(id, oldTitle) {
+      const title = prompt('重命名会话', oldTitle || '');
+      if (title === null) return;
+      const t = title.trim();
+      if (!t) return;
+      await fetch(`/api/conversations/${id}/rename`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: t }),
       });
+      loadConversations();
+      if (id === currentConvId) loadConversations();
+    }
+
+    async function setConvStatus(id, action) {
+      await fetch(`/api/conversations/${id}/${action}`, { method: 'POST' });
+      // 如果当前选中的会话被移走（归档/删除），清空主区
+      if (id === currentConvId && (action === 'archive' || action === 'trash')) {
+        currentConvId = null;
+        messagesEl.innerHTML = '';
+      }
+      loadConversations();
+    }
+
+    async function deleteForever(id) {
+      if (!confirm('永久删除该会话？此操作不可恢复。')) return;
+      await fetch(`/api/conversations/${id}`, { method: 'DELETE' });
+      if (id === currentConvId) {
+        currentConvId = null;
+        messagesEl.innerHTML = '';
+      }
+      loadConversations();
     }
 
     async function selectConversation(id) {
@@ -347,11 +473,21 @@
       inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
     });
 
+    // 侧栏分区折叠
+    archivedToggleEl.onclick = () => {
+      const open = archivedListEl.classList.toggle('open');
+      archivedToggleEl.textContent = open ? '已归档 ▾' : '已归档 ▸';
+    };
+    trashToggleEl.onclick = () => {
+      const open = trashListEl.classList.toggle('open');
+      trashToggleEl.textContent = open ? '回收站 ▾' : '回收站 ▸';
+    };
+
     // 初始化
     (async () => {
       await loadConversations();
       // 没有会话时自动建一个
-      const res = await fetch('/api/conversations');
+      const res = await fetch('/api/conversations?status=active');
       const convs = await res.json();
       if (convs.length === 0) {
         await newConversation();
