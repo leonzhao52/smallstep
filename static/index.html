@@ -100,20 +100,38 @@
     .approval-box .approval-status { color: #6e6e73; font-size: 12px; }
     /* 输入区 */
     #input-area {
-      display: flex; gap: 8px; padding: 16px; background: #fff;
-      border-top: 1px solid #e5e5ea;
+      display: flex; flex-direction: column; gap: 8px; padding: 16px;
+      background: #fff; border-top: 1px solid #e5e5ea;
     }
+    .input-row { display: flex; gap: 8px; align-items: flex-end; }
     #input {
       flex: 1; padding: 10px 14px; border: 1px solid #d1d1d6;
       border-radius: 10px; font-size: 14px; outline: none; resize: none;
       font-family: inherit; max-height: 120px;
     }
     #input:focus { border-color: #007aff; }
+    #attach-btn {
+      padding: 0 14px; height: 42px; border: 1px solid #d1d1d6;
+      border-radius: 10px; background: #fff; font-size: 18px; cursor: pointer;
+    }
+    #attach-btn:hover { border-color: #007aff; }
     #send {
-      padding: 0 20px; border: none; border-radius: 10px;
+      padding: 0 20px; height: 42px; border: none; border-radius: 10px;
       background: #007aff; color: #fff; font-size: 14px; cursor: pointer;
     }
     #send:disabled { background: #c7c7cc; cursor: not-allowed; }
+    /* 待发送附件条 */
+    #attach-strip { display: flex; flex-wrap: wrap; gap: 6px; }
+    .attach-chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: #f2f2f7; border-radius: 14px; padding: 4px 10px;
+      font-size: 12px; color: #333;
+    }
+    .attach-chip .rm { cursor: pointer; color: #999; }
+    .attach-chip .rm:hover { color: #ff3b30; }
+    .attach-chip.uploading { color: #999; }
+    /* 用户气泡内的附件标记 */
+    .user-atts { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; opacity: 0.9; }
     /* Markdown 渲染样式 */
     .bubble.md { white-space: normal; }
     .bubble.md > :first-child { margin-top: 0; }
@@ -177,8 +195,13 @@
   <div id="main">
     <div id="messages"></div>
     <div id="input-area">
-      <textarea id="input" rows="1" placeholder="输入消息，Enter 发送"></textarea>
-      <button id="send">发送</button>
+      <div id="attach-strip" style="display:none;"></div>
+      <div class="input-row">
+        <button id="attach-btn" title="添加附件">📎</button>
+        <input type="file" id="file-input" multiple hidden />
+        <textarea id="input" rows="1" placeholder="输入消息，Enter 发送"></textarea>
+        <button id="send">发送</button>
+      </div>
     </div>
   </div>
 
@@ -195,6 +218,7 @@
 
     let currentConvId = null;
     let busy = false;
+    let pendingAttachments = []; // 已上传待发送的附件元数据 [{id,name,type,size,mime}]
 
     // ---------- 会话列表 ----------
     // 创建一个会话条目；actions 指定要显示的操作按钮
@@ -308,9 +332,11 @@
       const res = await fetch(`/api/conversations/${id}`);
       if (!res.ok) return;
       const conv = await res.json();
-      (conv.messages || []).forEach((m) =>
-        addBubble(m.role, m.content, m.role === 'assistant') // 模型消息渲染 Markdown
-      );
+      (conv.messages || []).forEach((m) => {
+        const b = addBubble(m.role, m.content, m.role === 'assistant'); // 模型消息渲染 Markdown
+        // 用户消息若带附件，显示附件标记（历史里的 content 已内联文本/图片）
+        if (m.role === 'user' && m.attachments) addAttachmentBadges(b, m.attachments);
+      });
       loadConversations();
       scrollToBottom();
     }
@@ -445,12 +471,23 @@
     // ---------- 发送 + 流式 ----------
     async function send() {
       const text = inputEl.value.trim();
-      if (!text || busy || !currentConvId) return;
+      // 有附件时允许纯附件发送（无文字）；两者都没有才拦截
+      if ((!text && pendingAttachments.length === 0) || busy || !currentConvId) return;
+      // 等待仍在上传中的附件完成
+      if (pendingAttachments.some((a) => a.uploading)) {
+        addNotice('附件还在上传中，请稍候…');
+        return;
+      }
 
       busy = true;
       sendBtn.disabled = true;
       inputEl.value = '';
-      addBubble('user', text); // 用户消息保持纯文本
+      const atts = pendingAttachments.slice();
+      pendingAttachments = [];
+      renderAttachStrip();
+
+      const userBubble = addBubble('user', text); // 用户消息保持纯文本
+      addAttachmentBadges(userBubble, atts);
 
       const assistantBubble = addBubble('assistant', '', true); // 模型回复走 Markdown
       let assistantText = '';
@@ -459,7 +496,7 @@
         const res = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ conversation_id: currentConvId, message: text }),
+          body: JSON.stringify({ conversation_id: currentConvId, message: text, attachments: atts }),
         });
 
         if (!res.ok || !res.body) {
@@ -528,6 +565,82 @@
         case 'done':
           break;
       }
+    }
+
+    // ---------- 附件上传 ----------
+    const attachBtn = $('attach-btn');
+    const fileInput = $('file-input');
+    const attachStrip = $('attach-strip');
+
+    function renderAttachStrip() {
+      attachStrip.innerHTML = '';
+      if (pendingAttachments.length === 0) {
+        attachStrip.style.display = 'none';
+        return;
+      }
+      attachStrip.style.display = 'flex';
+      pendingAttachments.forEach((att, idx) => {
+        const chip = document.createElement('span');
+        chip.className = 'attach-chip' + (att.uploading ? ' uploading' : '');
+        const icon = att.type === 'image' ? '🖼️' : '📎';
+        const label = document.createElement('span');
+        label.textContent = `${icon} ${att.uploading ? '上传中… ' : ''}${att.name}`;
+        chip.appendChild(label);
+        if (!att.uploading) {
+          const rm = document.createElement('span');
+          rm.className = 'rm';
+          rm.textContent = '✕';
+          rm.title = '移除';
+          rm.onclick = () => { pendingAttachments.splice(idx, 1); renderAttachStrip(); };
+          chip.appendChild(rm);
+        }
+        attachStrip.appendChild(chip);
+      });
+    }
+
+    async function uploadFile(file) {
+      // 占位：上传中
+      const temp = { name: file.name, type: null, uploading: true };
+      pendingAttachments.push(temp);
+      renderAttachStrip();
+      try {
+        const fd = new FormData();
+        fd.append('file', file);
+        fd.append('conversation_id', currentConvId || '');
+        const res = await fetch('/api/upload', { method: 'POST', body: fd });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || `上传失败: ${res.status}`);
+        }
+        const meta = await res.json();
+        // 用真实元数据替换占位
+        const i = pendingAttachments.indexOf(temp);
+        if (i !== -1) pendingAttachments[i] = meta;
+        renderAttachStrip();
+      } catch (err) {
+        pendingAttachments.splice(pendingAttachments.indexOf(temp), 1);
+        renderAttachStrip();
+        addNotice(`附件上传失败：${err.message}`, true);
+      }
+    }
+
+    attachBtn.onclick = () => fileInput.click();
+    fileInput.onchange = () => {
+      for (const f of fileInput.files) uploadFile(f);
+      fileInput.value = ''; // 允许重复选同一文件
+    };
+
+    // 用户气泡里显示附件标记
+    function addAttachmentBadges(bubble, atts) {
+      if (!atts || !atts.length) return;
+      const div = document.createElement('div');
+      div.className = 'user-atts';
+      atts.forEach((a) => {
+        const s = document.createElement('span');
+        s.textContent = `${a.type === 'image' ? '🖼️' : '📎'} ${a.name}`;
+        div.appendChild(s);
+      });
+      bubble.appendChild(div);
     }
 
     // ---------- 事件绑定 ----------

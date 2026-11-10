@@ -5,12 +5,13 @@ import asyncio
 import json
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from . import agent as agent_mod
 from . import approvals
+from . import attachments as attachments_mod
 from . import storage
 from .config import config
 
@@ -22,10 +23,63 @@ router = APIRouter(prefix="/api")
 class ChatRequest(BaseModel):
     conversation_id: str
     message: str
+    # 已上传附件的元数据 [{id, name, type, mime, path}]，内容拼进当前这条消息
+    attachments: list[dict] = []
 
 
 class RenameRequest(BaseModel):
     title: str
+
+
+def build_user_message(conversation_id: str, text: str, attachments: list[dict]) -> dict:
+    """把用户文字 + 附件组装成 OpenAI 格式的 user message。
+
+    - 只有文字（或无附件）：content 为字符串，兼容所有模型。
+    - 含文本附件：在文字后追加一段「--- 附件: name ---」的文本块。
+    - 含图片：content 必须用 parts 数组，图片作为 image_url part（base64 data URL）。
+    """
+    text_parts: list[str] = []      # 文本段落
+    image_parts: list[dict] = []    # 图片 parts
+    att_meta: list[dict] = []       # 落盘/前端展示用的元数据
+
+    for att in attachments:
+        att_id = att.get("id")
+        meta = attachments_mod.find_meta(conversation_id, att_id)
+        if meta is None:
+            logger.warning("附件元数据缺失，跳过 id=%s", att_id)
+            continue
+        att_meta.append({
+            "id": meta["id"], "name": meta["name"],
+            "type": meta["type"], "size": meta["size"],
+        })
+        if meta["type"] == "text":
+            content = attachments_mod.read_text_content(meta)
+            text_parts.append(f"\n\n--- 附件: {meta['name']} ---\n{content}")
+        elif meta["type"] == "image":
+            data_url = attachments_mod.read_image_data_url(meta)
+            if data_url:
+                image_parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": data_url},
+                })
+
+    combined_text = text + "".join(text_parts)
+
+    if image_parts:
+        # 有图片：必须用 parts 数组；文字作为第一个 part（若无文字也要有个空占位）
+        parts: list[dict] = []
+        if combined_text.strip():
+            parts.append({"type": "text", "text": combined_text})
+        parts.extend(image_parts)
+        content = parts
+    else:
+        content = combined_text
+
+    msg = {"role": "user", "content": content}
+    if att_meta:
+        # 存一份不含 base64 的元数据，前端渲染气泡时展示附件标记
+        msg["attachments"] = att_meta
+    return msg
 
 
 @router.get("/models")
@@ -123,6 +177,22 @@ async def confirm_command(req_id: str, req: ApprovalRequest):
     return {"ok": True}
 
 
+@router.post("/upload")
+async def upload_attachment(
+    file: UploadFile = File(...),
+    conversation_id: str = Form(""),
+):
+    """上传一个附件，返回元数据。文本/图片白名单，大小上限见 attachments.MAX_FILE_SIZE。"""
+    cid = conversation_id or "tmp"
+    data = await file.read()
+    try:
+        meta = attachments_mod.save_upload(cid, file.filename or "file", data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    # 前端只需 id/name/type/size/mime；path 留在服务端即可（这里一并返回无妨）
+    return meta
+
+
 @router.post("/chat")
 async def chat(req: ChatRequest):
     """接收一条用户消息，返回 SSE 事件流。"""
@@ -135,7 +205,7 @@ async def chat(req: ChatRequest):
 
     # 落盘用户消息，并用返回的最新会话组装消息（带上历史）
     logger.info("收到用户消息 [会话 %s]：%s", req.conversation_id, req.message)
-    user_msg = {"role": "user", "content": req.message}
+    user_msg = build_user_message(req.conversation_id, req.message, req.attachments)
     conv = await storage.append_message(req.conversation_id, user_msg)
     if conv is None:
         raise HTTPException(status_code=404, detail="会话不存在")
