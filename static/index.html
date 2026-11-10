@@ -71,6 +71,33 @@
       text-align: center; font-size: 12px; color: #ff9500; margin: 8px 0;
     }
     .notice.error { color: #ff3b30; }
+    /* 命令确认框 */
+    .approval-box {
+      margin: 12px 0; padding: 12px 14px; border-radius: 10px;
+      background: #fff8e6; border: 1px solid #ffd66b;
+      font-size: 13px;
+    }
+    .approval-box .approval-title {
+      font-weight: 600; color: #ad6800; margin-bottom: 6px;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .approval-box .approval-cmd {
+      font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px;
+      background: #fff; border: 1px solid #ffd66b; border-radius: 6px;
+      padding: 8px 10px; margin: 6px 0 10px; word-break: break-all;
+      white-space: pre-wrap; color: #1d1d1f;
+    }
+    .approval-box .approval-btns { display: flex; gap: 8px; }
+    .approval-box button {
+      padding: 6px 16px; border: none; border-radius: 7px;
+      font-size: 13px; cursor: pointer;
+    }
+    .approval-box .btn-allow { background: #ff9500; color: #fff; }
+    .approval-box .btn-allow:hover { background: #e08600; }
+    .approval-box .btn-deny { background: #e5e5ea; color: #1d1d1f; }
+    .approval-box .btn-deny:hover { background: #d1d1d6; }
+    .approval-box button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .approval-box .approval-status { color: #6e6e73; font-size: 12px; }
     /* 输入区 */
     #input-area {
       display: flex; gap: 8px; padding: 16px; background: #fff;
@@ -370,6 +397,47 @@
       scrollToBottom();
     }
 
+    // 渲染命令确认框，返回确认框 DOM（按钮点击后调确认端点）
+    function addApprovalRequest(reqId, command) {
+      const box = document.createElement('div');
+      box.className = 'approval-box';
+      box.innerHTML = `
+        <div class="approval-title">⚠️ 需要你的确认</div>
+        <div>Agent 想执行以下命令（可能产生副作用）：</div>
+        <div class="approval-cmd"></div>
+        <div class="approval-btns">
+          <button class="btn-allow">允许执行</button>
+          <button class="btn-deny">拒绝</button>
+        </div>
+      `;
+      box.querySelector('.approval-cmd').textContent = command; // textContent 防 XSS
+      const allowBtn = box.querySelector('.btn-allow');
+      const denyBtn = box.querySelector('.btn-deny');
+
+      const decide = async (approved) => {
+        allowBtn.disabled = true;
+        denyBtn.disabled = true;
+        try {
+          await fetch(`/api/command-confirm/${reqId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ approved }),
+          });
+          const status = document.createElement('div');
+          status.className = 'approval-status';
+          status.textContent = approved ? '✓ 已允许，执行中…' : '✗ 已拒绝';
+          box.querySelector('.approval-btns').replaceWith(status);
+        } catch (e) {
+          addNotice(`确认失败：${e.message}`, true);
+        }
+      };
+      allowBtn.onclick = () => decide(true);
+      denyBtn.onclick = () => decide(false);
+
+      messagesEl.appendChild(box);
+      scrollToBottom();
+    }
+
     function scrollToBottom() {
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
@@ -452,6 +520,10 @@
           break;
         case 'title_update':
           loadConversations(); // 标题生成完成，刷新侧栏列表
+          break;
+        case 'approval_request':
+          // 高风险命令需要用户确认
+          addApprovalRequest(event.request_id, event.command);
           break;
         case 'done':
           break;

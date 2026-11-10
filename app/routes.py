@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from . import agent as agent_mod
+from . import approvals
 from . import storage
 from .config import config
 
@@ -109,6 +110,19 @@ async def delete_conversation_forever(conv_id: str):
     return {"ok": True}
 
 
+class ApprovalRequest(BaseModel):
+    approved: bool
+
+
+@router.post("/command-confirm/{req_id}")
+async def confirm_command(req_id: str, req: ApprovalRequest):
+    """用户对高风险命令做出允许/拒绝的决定，唤醒等待中的 agent。"""
+    ok = approvals.resolve(req_id, req.approved)
+    if not ok:
+        raise HTTPException(status_code=404, detail="确认请求不存在或已处理")
+    return {"ok": True}
+
+
 @router.post("/chat")
 async def chat(req: ChatRequest):
     """接收一条用户消息，返回 SSE 事件流。"""
@@ -136,7 +150,7 @@ async def chat(req: ChatRequest):
         used_provider = None
 
         try:
-            async for event in agent_mod.run_agent(messages):
+            async for event in agent_mod.run_agent(messages, conversation_id=req.conversation_id):
                 etype = event.get("type")
 
                 if etype == "text_delta":

@@ -74,7 +74,7 @@ def _load_builtin_tools() -> None:
     懒加载，避免循环导入（工具模块会 import 本模块的 register）。
     加新内置工具时在这里补一行 import。
     """
-    from . import tool_files, tool_web  # noqa: F401
+    from . import tool_files, tool_web, tool_exec  # noqa: F401
 
 
 _load_builtin_tools()

@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from typing import AsyncGenerator
 
@@ -21,7 +23,7 @@ from openai import (
     RateLimitError,
 )
 
-from . import llm, providers, tools
+from . import approvals, cmd_exec, llm, providers, tools
 from .config import config
 
 logger = logging.getLogger(__name__)
@@ -40,10 +42,11 @@ class FallbackTriggered(Exception):
     """首块之前出错，应当回退到下一个候选 model。"""
 
 
-async def run_agent(messages: list[dict]) -> AsyncGenerator[dict, None]:
+async def run_agent(messages: list[dict], conversation_id: str = "") -> AsyncGenerator[dict, None]:
     """对外入口：产出 SSE 事件流。
 
     依次尝试 model_priority 里的候选，第一个跑通的就返回；全部失败则 yield error。
+    conversation_id 用于 execute_command 的用户确认流程。
     """
     candidates = config.get_model_candidates()
     if not candidates:
@@ -68,7 +71,7 @@ async def run_agent(messages: list[dict]) -> AsyncGenerator[dict, None]:
         try:
             logger.info("尝试候选模型 [%s]", cand.label())
             used_model = None
-            async for event in run_single_model(client, cand.model, messages):
+            async for event in run_single_model(client, cand.model, messages, conversation_id):
                 # 记录实际使用的 model，随 done 事件带出
                 if event.get("type") == "done":
                     used_model = event.get("model")
@@ -126,12 +129,74 @@ async def generate_title(user_message: str) -> str | None:
     return None
 
 
+async def _run_execute_command(args_json: str, conversation_id: str) -> AsyncGenerator[dict, None]:
+    """execute_command 的风险分级 + 用户确认 + 执行。
+
+    yield 两种 dict：
+    - {"event": {...}}          -> 透传给前端的 approval_request 事件
+    - {"result": "..."}         -> 最终执行结果（喂回模型）
+
+    流程：
+    1. 解析命令，classify_risk 分级。
+    2. safe -> 直接执行。
+    3. risky -> 创建确认请求，yield approval_request，await 用户决定（带超时）。
+       允许才执行，拒绝/超时返回拒绝信息。
+    """
+    try:
+        args = json.loads(args_json) if args_json else {}
+    except json.JSONDecodeError:
+        yield {"result": f"错误：参数不是合法 JSON：{args_json}"}
+        return
+
+    command = (args.get("command") or "").strip()
+    timeout = args.get("timeout", cmd_exec.DEFAULT_TIMEOUT)
+    if not command:
+        yield {"result": "错误：command 不能为空。"}
+        return
+
+    risk = cmd_exec.classify_risk(command)
+
+    if risk == "safe":
+        logger.info("命令 [safe] 自动执行：%s", command)
+        result = await cmd_exec.execute(command, timeout)
+        yield {"result": result}
+        return
+
+    # risky：需要用户确认
+    req_id, future = approvals.create(conversation_id, command, risk)
+    yield {
+        "event": {
+            "type": "approval_request",
+            "request_id": req_id,
+            "command": command,
+            "risk": risk,
+        }
+    }
+
+    try:
+        approved = await asyncio.wait_for(future, timeout=approvals.APPROVAL_TIMEOUT)
+    except asyncio.TimeoutError:
+        approvals.resolve(req_id, False)  # 清理
+        logger.warning("确认超时，视为拒绝：%s", command)
+        yield {"result": f"命令已取消：等待用户确认超时（{approvals.APPROVAL_TIMEOUT:.0f}s）。"}
+        return
+
+    if approved:
+        logger.info("命令 [risky] 用户已允许，执行：%s", command)
+        result = await cmd_exec.execute(command, timeout)
+        yield {"result": result}
+    else:
+        logger.info("命令 [risky] 用户拒绝：%s", command)
+        yield {"result": f"命令已被用户拒绝，未执行：{command}"}
+
+
 async def run_single_model(
-    client, model: str, messages: list[dict]
+    client, model: str, messages: list[dict], conversation_id: str = ""
 ) -> AsyncGenerator[dict, None]:
     """在单个 model 上跑：流式输出文本，必要时执行工具并循环。
 
     抛出 FallbackTriggered 表示该 model 首块前失败，由 run_agent 换下一个。
+    conversation_id 用于 execute_command 的用户确认流程。
     """
     working = list(messages)
     tool_schemas = tools.openai_tool_schemas()
@@ -220,6 +285,21 @@ async def run_single_model(
             slot = tool_calls_acc[i]
             logger.info("LLM [%s] 请求工具调用: %s(%s)", model, slot["name"], slot["arguments"])
             yield {"type": "tool_call", "name": slot["name"], "arguments": slot["arguments"]}
+
+            # execute_command 特殊处理：风险分级 + 用户确认（可能 yield approval_request）
+            if slot["name"] == "execute_command":
+                async for res in _run_execute_command(slot["arguments"], conversation_id):
+                    if res.get("event"):
+                        yield res["event"]          # approval_request，透传给前端
+                    else:
+                        result = res["result"]
+                        logger.debug("execute_command 返回: %s", result[:200])
+                        yield {"type": "tool_result", "name": slot["name"], "content": result}
+                        working.append(
+                            {"role": "tool", "tool_call_id": slot["id"], "content": result}
+                        )
+                continue
+
             result = await tools.execute(slot["name"], slot["arguments"])
             logger.debug("工具 %s 返回: %s", slot["name"], result)
             yield {"type": "tool_result", "name": slot["name"], "content": result}
