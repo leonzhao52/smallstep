@@ -154,11 +154,42 @@ def find_meta(conversation_id: str, att_id: str) -> Optional[dict]:
         return None
 
 
+def _decode_text(data: bytes) -> str:
+    """解码文本附件：UTF-8 严格 → GBK（中文 Windows 常见）→ 编码探测库兜底。
+
+    不能死用 UTF-8：GBK 文件会被 errors=replace 解成满屏 �，模型读不懂。
+    """
+    # 1) UTF-8 严格解码（绝大多数现代文本文件）
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    # 2) GBK（覆盖中文 Windows 记事本 ANSI、老代码文件）
+    try:
+        return data.decode("gbk")
+    except UnicodeDecodeError:
+        pass
+    # 3) 编码探测库兜底（若已安装）
+    try:
+        from charset_normalizer import from_bytes
+        result = from_bytes(data).best()
+        if result is not None:
+            # CharsetMatch.output() 返回 UTF-8 字节；str(result) 反而是乱码
+            return result.output().decode("utf-8")
+    except ImportError:
+        pass
+    except Exception:
+        pass
+    # 4) 全部失败：UTF-8 宽松解码（带替换符），至少不崩
+    return data.decode("utf-8", errors="replace")
+
+
 def read_text_content(meta: dict) -> str:
-    """读文本附件内容（截断到 MAX_TEXT_CHARS）。"""
+    """读文本附件内容（截断到 MAX_TEXT_CHARS）。带编码探测，避免 GBK 等非 UTF-8 文件变乱码。"""
     path = PROJECT_ROOT / meta["path"]
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        data = path.read_bytes()
+        text = _decode_text(data)
     except Exception as e:
         return f"[附件 {meta['name']} 读取失败：{e}]"
     if len(text) > MAX_TEXT_CHARS:
