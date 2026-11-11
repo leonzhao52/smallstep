@@ -709,6 +709,11 @@
     }
 
     function handleEvent(event, bubble, getText, setText) {
+      // approval_request 等事件是 {"event": {...}} 包裹结构，统一取内层 payload。
+      // 平铺事件（text_delta 等）没有 event 键，保持原样。
+      if (event && typeof event.event === 'object' && event.event !== null) {
+        event = event.event;
+      }
       switch (event.type) {
         case 'text_delta':
           // 收到正文说明工具阶段结束，折叠状态条

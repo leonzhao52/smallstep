@@ -26,6 +26,10 @@ class Conversation(BaseModel):
     # 记录最近一次实际使用的 provider/model，便于排查
     last_provider: Optional[str] = None
     last_model: Optional[str] = None
+    # 来源渠道：webui（默认）/ wechat ...，用于区分不同渠道的会话
+    channel: str = "webui"
+    # 渠道内的发送者标识（如微信 from_user_id），webui 渠道为空
+    sender_id: Optional[str] = None
 
 
 def _path(conv_id: str) -> Path:
@@ -38,6 +42,36 @@ def _ensure_dir() -> None:
 
 async def create(title: str = "新会话") -> Conversation:
     conv = Conversation(id=uuid.uuid4().hex, title=title[:30] or "新会话")
+    await save(conv)
+    return conv
+
+
+async def get_or_create_by_sender(channel: str, sender_id: str) -> Conversation:
+    """按「渠道 + 发送者」取或建会话（微信等非 webui 渠道用）。
+
+    每个渠道内的每个发送者对应一个独立会话。遍历 active 会话匹配
+    channel + sender_id；没有就新建（标题先用发送者标识占位，首轮后由
+    agent.generate_title 覆盖）。单用户本地应用，遍历文件量小，可接受。
+    """
+    _ensure_dir()
+    for p in CONV_DIR.glob("*.json"):
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if (
+            data.get("status") == "active"
+            and data.get("channel") == channel
+            and data.get("sender_id") == sender_id
+        ):
+            return Conversation(**data)
+
+    conv = Conversation(
+        id=uuid.uuid4().hex,
+        title=f"{channel}:{sender_id}"[:30],
+        channel=channel,
+        sender_id=sender_id,
+    )
     await save(conv)
     return conv
 

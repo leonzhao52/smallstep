@@ -8,3 +8,4 @@ httpx
 trafilatura
 ddgs
 python-multipart
+qrcode
