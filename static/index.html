@@ -71,6 +71,39 @@
       text-align: center; font-size: 12px; color: #ff9500; margin: 8px 0;
     }
     .notice.error { color: #ff3b30; }
+    /* 工具调用动态状态条 */
+    .tool-status {
+      margin: 8px 0; padding: 7px 12px; border-radius: 9px;
+      background: #f5f5f7; border: 1px solid #e5e5ea; font-size: 12px;
+      color: #6e6e73; max-width: 70%;
+    }
+    .tool-status-head {
+      display: flex; align-items: center; gap: 7px; cursor: pointer;
+      user-select: none;
+    }
+    .tool-status-head:hover { color: #1d1d1f; }
+    .tool-status .spinner {
+      width: 12px; height: 12px; flex-shrink: 0;
+      border: 2px solid #d1d1d6; border-top-color: #007aff;
+      border-radius: 50%; animation: spin 0.8s linear infinite;
+    }
+    .tool-status.done .spinner {
+      border: none; animation: none;
+      width: auto; height: auto;
+    }
+    .tool-status.done .spinner::before { content: '✓'; color: #34c759; font-size: 12px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .tool-status-current { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tool-status-chevron { flex-shrink: 0; font-size: 10px; color: #c7c7cc; }
+    .tool-status-log {
+      display: none; margin-top: 7px; padding-top: 7px;
+      border-top: 1px solid #e5e5ea;
+      font-family: "SFMono-Regular", Consolas, monospace; font-size: 11px;
+      color: #86868b; max-height: 160px; overflow-y: auto;
+    }
+    .tool-status.open .tool-status-log { display: block; }
+    .tool-status.open .tool-status-chevron { transform: rotate(90deg); }
+    .tool-status-log div { padding: 1px 0; white-space: pre-wrap; word-break: break-all; }
     /* 命令确认框 */
     .approval-box {
       margin: 12px 0; padding: 12px 14px; border-radius: 10px;
@@ -98,6 +131,65 @@
     .approval-box .btn-deny:hover { background: #d1d1d6; }
     .approval-box button:disabled { opacity: 0.5; cursor: not-allowed; }
     .approval-box .approval-status { color: #6e6e73; font-size: 12px; }
+    /* 设置按钮（侧栏齿轮） */
+    #settings-btn {
+      margin: 0 12px 12px; padding: 9px; border: 1px solid #e5e5ea; border-radius: 8px;
+      background: #fff; color: #1d1d1f; font-size: 13px; cursor: pointer;
+    }
+    #settings-btn:hover { background: #f0f0f2; }
+    /* 模态框 */
+    .modal-overlay {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.35);
+      z-index: 1000; align-items: center; justify-content: center;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal-panel {
+      background: #fff; border-radius: 14px; width: min(680px, 92vw);
+      max-height: 86vh; display: flex; flex-direction: column;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+    }
+    .modal-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 20px; border-bottom: 1px solid #e5e5ea;
+    }
+    .modal-header h2 { font-size: 16px; font-weight: 600; }
+    .modal-close { border: none; background: transparent; font-size: 20px; cursor: pointer; color: #6e6e73; }
+    .modal-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
+    .modal-footer {
+      padding: 12px 20px; border-top: 1px solid #e5e5ea;
+      display: flex; justify-content: flex-end; gap: 8px;
+    }
+    .cfg-section { margin-bottom: 20px; }
+    .cfg-section h3 { font-size: 13px; color: #6e6e73; margin-bottom: 8px; font-weight: 600; }
+    .cfg-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+    .cfg-input {
+      flex: 1; min-width: 120px; padding: 7px 10px; border: 1px solid #d1d1d6;
+      border-radius: 7px; font-size: 13px; outline: none; font-family: inherit;
+    }
+    .cfg-input:focus { border-color: #007aff; }
+    .cfg-input.mono { font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; }
+    .cfg-small-btn {
+      border: 1px solid #e5e5ea; background: #fff; border-radius: 6px;
+      padding: 6px 9px; font-size: 12px; cursor: pointer; color: #6e6e73;
+    }
+    .cfg-small-btn:hover { background: #f0f0f2; color: #1d1d1f; }
+    .cfg-small-btn.danger:hover { background: #ffeceb; color: #ff3b30; border-color: #ffccc7; }
+    .cfg-hint { font-size: 11px; color: #c7c7cc; margin-top: 4px; }
+    .btn-primary {
+      padding: 8px 18px; border: none; border-radius: 8px; background: #007aff;
+      color: #fff; font-size: 13px; cursor: pointer;
+    }
+    .btn-primary:hover { background: #0066d6; }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* Toast 提示 */
+    #toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: #1d1d1f; color: #fff; padding: 10px 18px; border-radius: 10px;
+      font-size: 13px; z-index: 2000; opacity: 0; transition: opacity 0.25s;
+      pointer-events: none; max-width: 80vw;
+    }
+    #toast.show { opacity: 1; }
+    #toast.error { background: #ff3b30; }
     /* 输入区 */
     #input-area {
       display: flex; flex-direction: column; gap: 8px; padding: 16px;
@@ -191,6 +283,7 @@
       <div id="trash-toggle" class="side-toggle">回收站 ▸</div>
       <div id="trash-list" class="side-list"></div>
     </div>
+    <button id="settings-btn">⚙️ 设置</button>
   </div>
   <div id="main">
     <div id="messages"></div>
@@ -204,6 +297,22 @@
       </div>
     </div>
   </div>
+
+  <!-- 设置模态框 -->
+  <div id="settings-modal" class="modal-overlay">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <h2>⚙️ 设置</h2>
+        <button class="modal-close" id="settings-close">×</button>
+      </div>
+      <div class="modal-body" id="settings-body"></div>
+      <div class="modal-footer">
+        <button class="cfg-small-btn" id="settings-cancel">取消</button>
+        <button class="btn-primary" id="settings-save">保存并热更新</button>
+      </div>
+    </div>
+  </div>
+  <div id="toast"></div>
 
   <script>
     const $ = (id) => document.getElementById(id);
@@ -481,6 +590,8 @@
 
       busy = true;
       sendBtn.disabled = true;
+      toolStatusEl = null;   // 新一轮：重置工具状态条（旧的已在上一轮 toolStatusFinish 里折叠保留）
+      toolStatusLog = null;
       inputEl.value = '';
       const atts = pendingAttachments.slice();
       pendingAttachments = [];
@@ -536,9 +647,72 @@
       }
     }
 
+    // ---------- 工具调用动态状态条 ----------
+    // 每条 assistant 回复最多一个状态条：运行时显示当前步骤 + 转圈，
+    // 可点开看完整步骤日志；工具全部结束后折叠并标记完成。
+    let toolStatusEl = null;   // 当前的状态条 DOM
+    let toolStatusLog = null;  // 状态条里的步骤日志容器
+    let toolStepCount = 0;
+
+    function toolStatusEnsure() {
+      if (toolStatusEl) return;
+      toolStatusEl = document.createElement('div');
+      toolStatusEl.className = 'tool-status';
+      toolStatusEl.innerHTML = `
+        <div class="tool-status-head">
+          <span class="spinner"></span>
+          <span class="tool-status-current">调用工具…</span>
+          <span class="tool-status-chevron">▶</span>
+        </div>
+        <div class="tool-status-log"></div>
+      `;
+      // 点头部折叠/展开日志
+      toolStatusEl.querySelector('.tool-status-head').onclick = () => {
+        toolStatusEl.classList.toggle('open');
+      };
+      messagesEl.appendChild(toolStatusEl);
+      toolStatusLog = toolStatusEl.querySelector('.tool-status-log');
+      toolStepCount = 0;
+      scrollToBottom();
+    }
+
+    function toolStatusUpdate(name) {
+      toolStatusEnsure();
+      toolStepCount++;
+      const line = document.createElement('div');
+      line.textContent = `${toolStepCount}. 调用 ${name}`;
+      toolStatusLog.appendChild(line);
+      toolStatusEl.querySelector('.tool-status-current').textContent =
+        `正在调用 ${name}（第 ${toolStepCount} 步）…`;
+      toolStatusLog.scrollTop = toolStatusLog.scrollHeight;
+      scrollToBottom();
+    }
+
+    function toolStatusResult(name) {
+      if (!toolStatusEl) return;
+      const line = document.createElement('div');
+      line.textContent = `   ↳ ${name} 已返回`;
+      toolStatusLog.appendChild(line);
+      toolStatusLog.scrollTop = toolStatusLog.scrollHeight;
+      scrollToBottom();
+    }
+
+    // 工具阶段结束（收到正文/完成），折叠状态条并标记完成
+    function toolStatusFinish() {
+      if (!toolStatusEl) return;
+      toolStatusEl.classList.remove('open');
+      toolStatusEl.classList.add('done');
+      const cur = toolStatusEl.querySelector('.tool-status-current');
+      cur.textContent = `已完成 ${toolStepCount} 次工具调用`;
+      toolStatusEl = null;
+      toolStatusLog = null;
+    }
+
     function handleEvent(event, bubble, getText, setText) {
       switch (event.type) {
         case 'text_delta':
+          // 收到正文说明工具阶段结束，折叠状态条
+          toolStatusFinish();
           setText(getText() + event.content);
           setBubbleMarkdown(bubble, getText()); // 流式期间实时渲染 Markdown
           scrollToBottom();
@@ -547,12 +721,13 @@
           addNotice(`模型 ${event.failed} 不可用，已切换…`);
           break;
         case 'tool_call':
-          addNotice(`调用工具：${event.name}`);
+          toolStatusUpdate(event.name);
           break;
         case 'tool_result':
-          addNotice(`工具 ${event.name} 返回结果`);
+          toolStatusResult(event.name);
           break;
         case 'error':
+          toolStatusFinish();
           addNotice(event.message, true);
           break;
         case 'title_update':
@@ -563,6 +738,7 @@
           addApprovalRequest(event.request_id, event.command);
           break;
         case 'done':
+          toolStatusFinish();
           break;
       }
     }
@@ -643,6 +819,228 @@
       bubble.appendChild(div);
     }
 
+    // ---------- 配置管理（设置面板） ----------
+    const settingsModalEl = $('settings-modal');
+    const settingsBodyEl = $('settings-body');
+    let cfgDraft = null; // 面板打开期间的本地草稿 {providers, model_priority, channels, env_keys}
+
+    // 中央 fetch 封装：JSON 头 + 统一错误上抛
+    async function api(url, opts = {}) {
+      const init = { headers: {}, ...opts };
+      if (opts.body !== undefined) {
+        init.headers['Content-Type'] = 'application/json';
+        init.body = JSON.stringify(opts.body);
+      }
+      const res = await fetch(url, init);
+      let data = null;
+      try { data = await res.json(); } catch {}
+      if (!res.ok) {
+        throw new Error((data && data.detail) || `请求失败 (${res.status})`);
+      }
+      return data;
+    }
+
+    // Toast 提示
+    function toast(msg, isError = false) {
+      const el = $('toast');
+      el.textContent = msg;
+      el.className = 'show' + (isError ? ' error' : '');
+      setTimeout(() => { el.className = ''; }, 2600);
+    }
+
+    async function openSettings() {
+      try {
+        cfgDraft = await api('/api/config');
+      } catch (e) {
+        addNotice(`加载配置失败：${e.message}`, true);
+        return;
+      }
+      renderSettings();
+      settingsModalEl.classList.add('open');
+    }
+
+    function closeSettings() {
+      settingsModalEl.classList.remove('open');
+      cfgDraft = null;
+    }
+
+    function renderSettings() {
+      settingsBodyEl.innerHTML = '';
+
+      // ── 模型优先级 ──
+      const secModel = document.createElement('div');
+      secModel.className = 'cfg-section';
+      secModel.innerHTML = `
+        <h3>模型优先级（从上到下依次回退）</h3>
+        <div class="cfg-model-list"></div>
+        <button class="cfg-small-btn cfg-add-model">＋ 添加模型</button>
+        <div class="cfg-hint">provider 需在下方已定义；第一个失败会自动回退到下一个。</div>
+      `;
+      const modelList = secModel.querySelector('.cfg-model-list');
+      const renderModels = () => {
+        modelList.innerHTML = '';
+        cfgDraft.model_priority.forEach((c, i) => {
+          const row = document.createElement('div');
+          row.className = 'cfg-row';
+          const sel = document.createElement('select');
+          sel.className = 'cfg-input';
+          // cfgDraft.providers 是数组 [{name, base_url, ...}]，取 name 作为选项
+          cfgDraft.providers.forEach((p) => {
+            if (!p.name) return; // 跳过名称为空的新增行
+            const opt = document.createElement('option');
+            opt.value = p.name; opt.textContent = p.name;
+            if (p.name === c.provider) opt.selected = true;
+            sel.appendChild(opt);
+          });
+          const mdl = document.createElement('input');
+          mdl.className = 'cfg-input mono'; mdl.value = c.model;
+          mdl.placeholder = 'model 名';
+          mdl.oninput = () => { cfgDraft.model_priority[i].model = mdl.value; };
+          sel.onchange = () => { cfgDraft.model_priority[i].provider = sel.value; };
+          row.appendChild(sel); row.appendChild(mdl);
+          row.appendChild(upDownBtns(cfgDraft.model_priority, i, renderModels));
+          const del = document.createElement('button');
+          del.className = 'cfg-small-btn danger'; del.textContent = '✕';
+          del.onclick = () => { cfgDraft.model_priority.splice(i, 1); renderModels(); };
+          row.appendChild(del);
+          modelList.appendChild(row);
+        });
+      };
+      renderModels();
+      secModel.querySelector('.cfg-add-model').onclick = () => {
+        const firstProvider = Object.keys(cfgDraft.providers)[0] || '';
+        cfgDraft.model_priority.push({ provider: firstProvider, model: '' });
+        renderModels();
+      };
+      settingsBodyEl.appendChild(secModel);
+
+      // ── Provider 连接 ──
+      const secProv = document.createElement('div');
+      secProv.className = 'cfg-section';
+      secProv.innerHTML = `
+        <h3>Provider 连接</h3>
+        <div class="cfg-prov-list"></div>
+        <button class="cfg-small-btn cfg-add-prov">＋ 添加 Provider</button>
+      `;
+      const provList = secProv.querySelector('.cfg-prov-list');
+      const renderProviders = () => {
+        provList.innerHTML = '';
+        cfgDraft.providers.forEach((p, i) => {
+          const row = document.createElement('div');
+          row.className = 'cfg-row';
+          const name = document.createElement('input');
+          name.className = 'cfg-input mono'; name.value = p.name; name.placeholder = '名称';
+          name.style.maxWidth = '110px';
+          name.oninput = () => { p.name = name.value; };
+          const url = document.createElement('input');
+          url.className = 'cfg-input mono'; url.value = p.base_url; url.placeholder = 'base_url';
+          url.oninput = () => { p.base_url = url.value; };
+          const del = document.createElement('button');
+          del.className = 'cfg-small-btn danger'; del.textContent = '✕';
+          del.onclick = () => { cfgDraft.providers.splice(i, 1); renderProviders(); renderModels(); };
+          row.appendChild(name); row.appendChild(url); row.appendChild(del);
+          provList.appendChild(row);
+        });
+      };
+      renderProviders();
+      secProv.querySelector('.cfg-add-prov').onclick = () => {
+        cfgDraft.providers.push({ name: '', base_url: '', api_key_ref: '' });
+        renderProviders();
+      };
+      settingsBodyEl.appendChild(secProv);
+
+      // ── API 密钥（脱敏，留空表示不改） ──
+      const secKeys = document.createElement('div');
+      secKeys.className = 'cfg-section';
+      secKeys.innerHTML = `<h3>API 密钥（留空表示不修改）</h3><div class="cfg-keys-list"></div>`;
+      const keysList = secKeys.querySelector('.cfg-keys-list');
+      Object.entries(cfgDraft.env_keys || {}).forEach(([k, masked]) => {
+        const row = document.createElement('div');
+        row.className = 'cfg-row';
+        const label = document.createElement('span');
+        label.className = 'cfg-input mono';
+        label.style.flex = '0 0 150px'; label.style.background = '#f5f5f7';
+        label.textContent = k;
+        const input = document.createElement('input');
+        input.className = 'cfg-input mono'; input.type = 'password';
+        input.placeholder = masked ? `已设置 (${masked.slice(0, 3)}…) 留空不改` : '未设置，填入新值';
+        input.dataset.envkey = k;
+        row.appendChild(label); row.appendChild(input);
+        keysList.appendChild(row);
+      });
+      settingsBodyEl.appendChild(secKeys);
+
+      // ── 接入渠道（预留） ──
+      const secCh = document.createElement('div');
+      secCh.className = 'cfg-section';
+      secCh.innerHTML = `
+        <h3>接入渠道</h3>
+        <div class="cfg-ch-list"></div>
+        <div class="cfg-hint">wechat 为后续个人微信接入预留的结构，当前仅 webui 生效。</div>
+      `;
+      const chList = secCh.querySelector('.cfg-ch-list');
+      Object.entries(cfgDraft.channels || {}).forEach(([name, ch]) => {
+        const row = document.createElement('div');
+        row.className = 'cfg-row';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.checked = ch.enabled; cb.id = 'ch-' + name;
+        const lbl = document.createElement('label');
+        lbl.htmlFor = cb.id; lbl.textContent = name;
+        lbl.style.fontSize = '13px'; lbl.style.minWidth = '70px';
+        const users = document.createElement('input');
+        users.className = 'cfg-input'; users.placeholder = '允许的用户（逗号分隔）';
+        users.value = (ch.allowed_users || []).join(', ');
+        users.oninput = () => {
+          ch.allowed_users = users.value.split(',').map((s) => s.trim()).filter(Boolean);
+        };
+        cb.onchange = () => { ch.enabled = cb.checked; };
+        row.appendChild(cb); row.appendChild(lbl); row.appendChild(users);
+        chList.appendChild(row);
+      });
+      settingsBodyEl.appendChild(secCh);
+    }
+
+    // 上移/下移按钮组（用于模型优先级排序）
+    function upDownBtns(arr, i, rerender) {
+      const wrap = document.createElement('span');
+      const up = document.createElement('button');
+      up.className = 'cfg-small-btn'; up.textContent = '↑'; up.disabled = i === 0;
+      up.onclick = () => { [arr[i - 1], arr[i]] = [arr[i], arr[i - 1]]; rerender(); };
+      const down = document.createElement('button');
+      down.className = 'cfg-small-btn'; down.textContent = '↓';
+      down.disabled = i === arr.length - 1;
+      down.onclick = () => { [arr[i + 1], arr[i]] = [arr[i], arr[i + 1]]; rerender(); };
+      wrap.appendChild(up); wrap.appendChild(down);
+      return wrap;
+    }
+
+    async function saveSettings() {
+      const saveBtn = $('settings-save');
+      // 收集密钥：只发送用户填了新值的项
+      const keys = {};
+      settingsBodyEl.querySelectorAll('input[data-envkey]').forEach((inp) => {
+        if (inp.value.trim()) keys[inp.dataset.envkey] = inp.value;
+      });
+      saveBtn.disabled = true;
+      try {
+        await api('/api/config', {
+          method: 'PUT',
+          body: {
+            providers: cfgDraft.providers,
+            model_priority: cfgDraft.model_priority,
+            channels: cfgDraft.channels,
+            keys,
+          },
+        });
+        toast('✓ 配置已保存并热更新');
+        closeSettings();
+      } catch (e) {
+        toast(`保存失败：${e.message}`, true);
+      } finally {
+        saveBtn.disabled = false;
+      }
+    }
+
     // ---------- 事件绑定 ----------
     sendBtn.onclick = send;
     $('new-chat').onclick = newConversation;
@@ -666,6 +1064,15 @@
     trashToggleEl.onclick = () => {
       const open = trashListEl.classList.toggle('open');
       trashToggleEl.textContent = open ? '回收站 ▾' : '回收站 ▸';
+    };
+
+    // 设置面板
+    $('settings-btn').onclick = openSettings;
+    $('settings-close').onclick = closeSettings;
+    $('settings-cancel').onclick = closeSettings;
+    $('settings-save').onclick = saveSettings;
+    settingsModalEl.onclick = (e) => {
+      if (e.target === settingsModalEl) closeSettings(); // 点遮罩关闭
     };
 
     // 初始化
