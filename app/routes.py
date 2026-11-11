@@ -1,9 +1,10 @@
-"""API 路由：SSE 聊天、会话管理、模型列表。"""
+"""API 路由：SSE 聊天、会话管理、模型列表、配置管理。"""
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import os
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -12,8 +13,9 @@ from pydantic import BaseModel
 from . import agent as agent_mod
 from . import approvals
 from . import attachments as attachments_mod
+from . import providers as providers_mod
 from . import storage
-from .config import config
+from .config import CONFIG_PATH, PROJECT_ROOT, AppConfig, config, reload_config
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +90,185 @@ async def list_models():
     return {
         "model_priority": [c.label() for c in config.get_model_candidates()]
     }
+
+
+# ── 配置管理 ────────────────────────────────────────────────
+# 支持热更新：保存后原地改 config 单例 + 清 provider 客户端缓存 + 落盘，
+# 无需重启。密钥不写进 config.yaml（保留 ${ENV_VAR} 占位符），改密钥走 .env。
+
+_ENV_PATH = PROJECT_ROOT / ".env"
+_KNOWN_ENV_KEYS = ["OPENAI_API_KEY", "DEEPSEEK_API_KEY", "LOCAL_API_KEY", "TAVILY_API_KEY"]
+
+
+def _is_placeholder(value: str) -> bool:
+    """判断一个 api_key 值是否还是 ${ENV_VAR} 占位符（而非明文密钥）。"""
+    return "${" in value
+
+
+def _mask(value: str) -> str:
+    """密钥脱敏：只露末 4 位，用于回显给前端。"""
+    if not value:
+        return ""
+    if _is_placeholder(value):
+        return value  # 占位符本身不敏感，原样返回
+    if len(value) <= 4:
+        return "••••"
+    return "••••" + value[-4:]
+
+
+def _provider_view(p) -> dict:
+    """序列化一个 provider 给前端：base_url 明文，api_key 脱敏，api_key_ref 是原始占位符。"""
+    return {
+        "name": p.name,
+        "base_url": p.base_url,
+        "api_key": _mask(p.api_key),
+        # 原始占位符（如 ${OPENAI_API_KEY}）；若 config 未用占位符则回退到掩码值，
+        # 但 PUT 端会把非占位符的 ref 重新推断成占位符，所以不会把明文写回 config.yaml。
+        "api_key_ref": p.api_key_ref or _mask(p.api_key),
+    }
+
+
+def _set_env_key(name: str, value: str) -> None:
+    """更新一个环境变量：os.environ 立即生效 + 拼接写回 .env 持久化。
+
+    用逐行拼接保留 .env 里其它行和注释，不整文件重生成。
+    """
+    os.environ[name] = value
+    lines: list[str] = []
+    if _ENV_PATH.exists():
+        lines = _ENV_PATH.read_text(encoding="utf-8").splitlines()
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith(f"{name}=") or stripped.startswith(f"export {name}="):
+            lines[i] = f"{name}={value}"
+            break
+    else:
+        lines.append(f"{name}={value}")
+    _ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_config_yaml(raw: dict) -> None:
+    """把 config 结构写回 config.yaml（保留占位符），加固定头注释。"""
+    import yaml
+    header = "# Auto-managed by WebUI. Edits here are overwritten on save.\n"
+    CONFIG_PATH.write_text(header + yaml.safe_dump(raw, allow_unicode=True, sort_keys=False),
+                           encoding="utf-8")
+
+
+class ProviderIn(BaseModel):
+    name: str
+    base_url: str
+    # api_key_ref：GET 回显的原始占位符（如 ${OPENAI_API_KEY}），保存时原样传回，
+    # 避免掩码值覆盖 config.yaml 里的占位符。留空表示该 provider 无密钥（如本地 ollama）。
+    api_key_ref: str = ""
+
+
+class ModelCandidateIn(BaseModel):
+    provider: str
+    model: str
+
+
+class ChannelIn(BaseModel):
+    enabled: bool = False
+    allowed_users: list[str] = []
+    model_priority: str = "default"
+    settings: dict = {}
+
+
+class ConfigUpdate(BaseModel):
+    providers: list[ProviderIn]
+    model_priority: list[ModelCandidateIn]
+    channels: dict[str, ChannelIn] = {}
+    # 需要更新的密钥明文 {ENV_NAME: 新值}，只处理非空项；空表示不改。
+    keys: dict[str, str] = {}
+
+
+@router.get("/config")
+async def get_config():
+    """返回当前配置，密钥脱敏回显。
+
+    api_key: 脱敏值（仅展示）。
+    api_key_ref: config.yaml 里的原始占位符（如 ${OPENAI_API_KEY}），保存时原样传回，
+                 以免被掩码值覆盖丢失。
+    """
+    env_keys = {k: _mask(os.getenv(k, "")) for k in _KNOWN_ENV_KEYS}
+    return {
+        "providers": [_provider_view(p) for p in config.providers.values()],
+        "model_priority": [
+            {"provider": c.provider, "model": c.model}
+            for c in config.model_priority
+        ],
+        "channels": {name: ch.model_dump() for name, ch in config.channels.items()},
+        "env_keys": env_keys,
+    }
+
+
+@router.put("/config")
+async def update_config(req: ConfigUpdate):
+    """保存配置并热更新：改 .env 密钥 → 重写 config.yaml → 重新加载单例 → 清客户端缓存。"""
+    # 1. 更新非空密钥到环境变量 + .env（Tavily 这类直接读 env 的立即生效）
+    for k, v in req.keys.items():
+        if v and k in _KNOWN_ENV_KEYS:
+            _set_env_key(k, v)
+
+    # 2. 重建 config.yaml 原始结构。api_key 用回传的 api_key_ref（原始占位符）；
+    #    若为空则该 provider 无密钥（如 local/ollama），写空串。不把明文密钥写进 config.yaml。
+    providers_raw: dict[str, dict] = {}
+    for p in req.providers:
+        key_val = p.api_key_ref or ""
+        providers_raw[p.name] = {"base_url": p.base_url, "api_key": key_val}
+
+    raw = {
+        "providers": providers_raw,
+        "model_priority": [c.model_dump() for c in req.model_priority],
+        "channels": {name: ch.model_dump() for name, ch in req.channels.items()},
+    }
+
+    # 3. 校验 + 原地重载单例（render 占位符 → pydantic 校验 → reload）
+    try:
+        rendered = _render_raw(raw)
+        parsed = parse_config(rendered, raw=raw)
+        # 交叉校验：model_priority 引用的 provider 必须已定义，否则拒绝保存
+        missing = [c.model for c in parsed.model_priority if c.provider not in parsed.providers]
+        if missing:
+            raise ValueError(f"model_priority 引用了未定义的 provider：{missing}")
+        reload_config(parsed)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"配置无效：{e}")
+
+    # 4. 清 provider 客户端缓存（base_url/api_key 可能变了）
+    providers_mod.reset_clients()
+
+    # 5. 落盘 config.yaml
+    _write_config_yaml(raw)
+
+    logger.info("配置已更新：%d 个 provider，%d 个 model 候选",
+                len(req.providers), len(req.model_priority))
+    return await get_config()
+
+
+def _render_raw(raw: dict) -> dict:
+    """对内存中的 config 结构渲染 ${ENV_VAR} 占位符。复用 config 模块的渲染逻辑。"""
+    from .config import _render
+    return _render(raw)
+
+
+def parse_config(rendered: dict, raw: dict | None = None) -> AppConfig:
+    """把渲染后的 dict 解析为 AppConfig（含 channels 校验）。
+
+    raw 为渲染前的原始结构，用于保留 provider api_key 的占位符模板（api_key_ref），
+    使热重载后 GET 回显仍不泄漏明文密钥。
+    """
+    from .config import ProviderConfig, ModelCandidate, ChannelConfig
+    raw = raw or {}
+    raw_providers = raw.get("providers", {}) or {}
+    providers = {}
+    for name, cfg in (rendered.get("providers", {}) or {}).items():
+        ref = (raw_providers.get(name, {}) or {}).get("api_key", "")
+        providers[name] = ProviderConfig(name=name, api_key_ref=ref, **cfg)
+    priority = [ModelCandidate(**item) for item in (rendered.get("model_priority", []) or [])]
+    channels = {name: ChannelConfig(**cfg) for name, cfg in (rendered.get("channels", {}) or {}).items()}
+    return AppConfig(providers=providers, model_priority=priority, channels=channels)
 
 
 @router.get("/conversations")

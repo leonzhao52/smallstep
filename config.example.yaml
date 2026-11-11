@@ -21,3 +21,18 @@ model_priority:
     model: deepseek-chat
   - provider: local
     model: llama3
+
+# 接入渠道（渠道无关设计）：每个渠道可独立开关、设用户白名单、引用一套 model 档。
+# webui 是当前唯一的实现渠道；wechat 为后续接入个人微信预留的结构，暂未实现。
+channels:
+  webui:
+    enabled: true
+    allowed_users: ["local"]
+    model_priority: default
+  wechat:
+    enabled: false
+    allowed_users: []
+    model_priority: default
+    settings:
+      protocol: wechaty
+      token: ${WECHAT_TOKEN:-}
