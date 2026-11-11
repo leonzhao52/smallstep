@@ -10,7 +10,6 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .config import config
 from .log import setup_logging
 from .routes import router
 
@@ -29,28 +28,15 @@ async def lifespan(app: FastAPI):
 
     微信渠道（channels.wechat.enabled=true）作为常驻 asyncio 任务长轮询收消息。
     未登录时不再终端扫码，而是等 WebUI 配置面板发起扫码登录。
+    运行中改配置由 PUT /api/config 调 wechat.reload_channel() 热启停，无需重启进程。
     """
-    wechat_task: asyncio.Task | None = None
-    ch = config.get_channel("wechat")
-    if ch and ch.enabled:
-        from . import wechat as wechat_mod  # 延迟导入，避免未启用时也加载
-        svc = wechat_mod.WechatService()
-        wechat_mod.set_wechat(svc)  # 注册单例，/api/wechat/* 路由共享同一实例
-        wechat_task = asyncio.create_task(svc.start())
-        logger.info("微信渠道已启用，后台任务已启动（未登录时在 WebUI 扫码）")
-    else:
-        logger.info("微信渠道未启用")
+    from . import wechat as wechat_mod  # 延迟导入
+    await wechat_mod.start_channel()
 
     yield
 
     # 关闭：停止后台任务
-    if wechat_task:
-        wechat_task.cancel()
-        try:
-            await wechat_task
-        except asyncio.CancelledError:
-            pass
-        logger.info("微信渠道后台任务已停止")
+    await wechat_mod.stop_channel()
 
 
 app = FastAPI(title="个人 Agent", lifespan=lifespan)

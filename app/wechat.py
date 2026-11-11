@@ -64,6 +64,9 @@ STATE_DIR = PROJECT_ROOT / "data" / "wechat"
 _instance: Optional["WechatService"] = None
 
 
+_task: Optional[asyncio.Task] = None
+
+
 def get_wechat() -> Optional["WechatService"]:
     return _instance
 
@@ -71,6 +74,82 @@ def get_wechat() -> Optional["WechatService"]:
 def set_wechat(svc: Optional["WechatService"]) -> None:
     global _instance
     _instance = svc
+
+
+# ---------------------------------------------------------------------------
+# 渠道生命周期（热启停）：供 main.py lifespan 和 PUT /api/config 调用
+# ---------------------------------------------------------------------------
+
+async def start_channel() -> None:
+    """按当前 config 启动微信渠道（已启动则忽略）。enabled=false 时不做任何事。"""
+    global _task
+    ch = config.get_channel("wechat")
+    if not (ch and ch.enabled):
+        logger.info("微信渠道未启用，跳过启动")
+        return
+    if _instance is not None and _task and not _task.done():
+        logger.info("微信渠道已在运行，忽略重复启动")
+        return
+    svc = WechatService()
+    set_wechat(svc)
+    _task = asyncio.create_task(svc.start())
+    logger.info("微信渠道已启动（未登录时在 WebUI 扫码）")
+
+
+async def stop_channel() -> None:
+    """停止微信渠道并清掉单例。幂等——未运行时安全调用。"""
+    global _task
+    if _instance is not None:
+        await _instance.stop()
+    set_wechat(None)
+    if _task:
+        _task.cancel()
+        try:
+            await _task
+        except asyncio.CancelledError:
+            pass
+        _task = None
+
+
+async def reload_channel() -> None:
+    """配置热更新后同步渠道状态：按 enabled 决定启停；配置项变了则重启。
+
+    - enabled=false：停掉（若在跑）。
+    - enabled=true 且未跑：启动。
+    - enabled=true 且在跑，但 base_url/poll_timeout/白名单变了：重启以应用新配置。
+    """
+    ch = config.get_channel("wechat")
+    enabled = bool(ch and ch.enabled)
+    running = _instance is not None and _task is not None and not _task.done()
+
+    if not enabled:
+        if running or _instance is not None:
+            await stop_channel()
+        return
+
+    # 需要重启吗：对比运行中实例的关键配置和最新 config
+    if running:
+        svc = _instance
+        settings = (ch.settings if ch else {}) or {}
+        new_base = settings.get("base_url") or "https://ilinkai.weixin.qq.com"
+        new_timeout = int(settings.get("poll_timeout") or DEFAULT_POLL_TIMEOUT_S)
+        new_users = list(ch.allowed_users or [])
+        new_token = settings.get("token") or ""
+        cfg_changed = (
+            svc._base_url != new_base
+            or svc._poll_timeout_s != new_timeout
+            or svc._allowed_users != new_users
+            or svc._boot_token != new_token  # 对比启动时的 settings token，避免扫码后的真实 token 触发误重启
+        )
+        if cfg_changed:
+            logger.info("微信渠道配置变更，重启以应用")
+            await stop_channel()
+            await start_channel()
+        else:
+            logger.info("微信渠道配置未变，保持运行")
+        return
+
+    await start_channel()
 
 
 def _qr_png_data_url(content: str) -> str:
@@ -123,6 +202,7 @@ class WechatService:
         self._poll_timeout_s: int = int(settings.get("poll_timeout") or DEFAULT_POLL_TIMEOUT_S)
 
         self._token: str = settings.get("token") or ""
+        self._boot_token: str = self._token  # 启动时 settings 里的 token，用于热重载对比
         self._get_updates_buf: str = ""
         self._context_tokens: dict[str, str] = {}      # from_user_id -> context_token
         self._context_token_at: dict[str, float] = {}  # from_user_id -> 缓存时间

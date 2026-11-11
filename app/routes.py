@@ -239,7 +239,14 @@ async def update_config(req: ConfigUpdate):
     # 4. 清 provider 客户端缓存（base_url/api_key 可能变了）
     providers_mod.reset_clients()
 
-    # 5. 落盘 config.yaml
+    # 5. 微信渠道热启停：按最新 config 同步后台任务（改 enabled/白名单/连接设置无需重启进程）
+    try:
+        from . import wechat as wechat_mod
+        await wechat_mod.reload_channel()
+    except Exception:
+        logger.exception("微信渠道热更新失败")
+
+    # 6. 落盘 config.yaml
     _write_config_yaml(raw)
 
     logger.info("配置已更新：%d 个 provider，%d 个 model 候选",
