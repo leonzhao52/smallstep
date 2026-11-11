@@ -28,15 +28,16 @@ async def lifespan(app: FastAPI):
     """应用生命周期：启动时拉起启用的渠道后台任务，关闭时停止。
 
     微信渠道（channels.wechat.enabled=true）作为常驻 asyncio 任务长轮询收消息。
-    未启用或登录失败时打日志跳过，不影响 WebUI。
+    未登录时不再终端扫码，而是等 WebUI 配置面板发起扫码登录。
     """
     wechat_task: asyncio.Task | None = None
     ch = config.get_channel("wechat")
     if ch and ch.enabled:
-        from .wechat import WechatService  # 延迟导入，避免未启用时也加载
-        svc = WechatService()
+        from . import wechat as wechat_mod  # 延迟导入，避免未启用时也加载
+        svc = wechat_mod.WechatService()
+        wechat_mod.set_wechat(svc)  # 注册单例，/api/wechat/* 路由共享同一实例
         wechat_task = asyncio.create_task(svc.start())
-        logger.info("微信渠道已启用，后台任务已启动")
+        logger.info("微信渠道已启用，后台任务已启动（未登录时在 WebUI 扫码）")
     else:
         logger.info("微信渠道未启用")
 

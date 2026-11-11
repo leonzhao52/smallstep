@@ -175,6 +175,16 @@
     .cfg-small-btn:hover { background: #f0f0f2; color: #1d1d1f; }
     .cfg-small-btn.danger:hover { background: #ffeceb; color: #ff3b30; border-color: #ffccc7; }
     .cfg-hint { font-size: 11px; color: #c7c7cc; margin-top: 4px; }
+    .wechat-box { margin-top: 10px; padding: 12px; border: 1px solid #e5e5ea;
+      border-radius: 8px; background: #fafafa; }
+    .wechat-status { font-size: 12px; color: #6e6e73; margin-bottom: 8px; }
+    .wechat-status.ok { color: #34c759; }
+    .wechat-status.err { color: #ff3b30; }
+    .wechat-qrrow { display: flex; gap: 14px; align-items: center; }
+    .wechat-qr { width: 160px; height: 160px; border: 1px solid #e5e5ea;
+      border-radius: 6px; background: #fff; }
+    .wechat-qrimg { width: 160px; height: 160px; display: block; }
+    .wechat-side { font-size: 12px; color: #86868b; line-height: 1.5; }
     .btn-primary {
       padding: 8px 18px; border: none; border-radius: 8px; background: #007aff;
       color: #fff; font-size: 13px; cursor: pointer;
@@ -867,6 +877,7 @@
     function closeSettings() {
       settingsModalEl.classList.remove('open');
       cfgDraft = null;
+      stopWechatPoll(); // 关面板停止扫码状态轮询
     }
 
     function renderSettings() {
@@ -1002,7 +1013,105 @@
         row.appendChild(cb); row.appendChild(lbl); row.appendChild(users);
         chList.appendChild(row);
       });
+      // 微信渠道：扫码登录（二维码在面板里展示，不再打印到终端）
+      const wxBox = document.createElement('div');
+      wxBox.className = 'wechat-box';
+      secCh.appendChild(wxBox);
+      renderWechatBox(wxBox);
+      startWechatPoll();
       settingsBodyEl.appendChild(secCh);
+    }
+
+    // ---------- 微信扫码登录（WebUI 展示二维码） ----------
+    let wechatPollTimer = null;
+
+    function wechatStatusText(st) {
+      if (!st.enabled) return '微信渠道未启用（在上方勾选并保存后重启服务生效）';
+      if (st.logged_in) return '✓ 已登录，正在收发消息';
+      switch (st.status) {
+        case 'waiting': return st.hint || '请用微信扫码';
+        case 'confirmed': return '✓ 登录成功';
+        case 'failed': return st.hint || '登录失败，请重试';
+        default: return '未登录，点击下方按钮扫码';
+      }
+    }
+
+    function renderWechatBox(box) {
+      box.innerHTML = '';
+      api('/api/wechat/status').then((st) => {
+        const s = document.createElement('div');
+        s.className = 'wechat-status' + (st.logged_in ? ' ok' : st.status === 'failed' ? ' err' : '');
+        s.textContent = wechatStatusText(st);
+        box.appendChild(s);
+
+        if (st.logged_in) {
+          const out = document.createElement('button');
+          out.className = 'cfg-small-btn danger'; out.textContent = '退出登录';
+          out.onclick = async () => {
+            try {
+              await api('/api/wechat/logout', { method: 'POST' });
+              toast('✓ 已退出微信登录'); renderWechatBox(box);
+            } catch (e) { toast(`退出失败：${e.message}`, true); }
+          };
+          box.appendChild(out);
+          return;
+        }
+
+        const qrow = document.createElement('div');
+        qrow.className = 'wechat-qrrow';
+        const qrWrap = document.createElement('div');
+        qrWrap.className = 'wechat-qr';
+        if (st.qr) {
+          const img = document.createElement('img');
+          img.className = 'wechat-qrimg'; img.src = st.qr; img.alt = '微信登录二维码';
+          qrWrap.appendChild(img);
+        }
+        const side = document.createElement('div');
+        side.className = 'wechat-side';
+        side.textContent = st.qr
+          ? '请用微信扫描二维码登录。\n二维码过期会自动刷新。'
+          : '点击「扫码登录」生成二维码，用微信扫码后即可在微信里和机器人对话。';
+        side.style.whiteSpace = 'pre-line';
+        const btn = document.createElement('button');
+        btn.className = 'cfg-small-btn';
+        btn.textContent = st.qr ? '重新生成二维码' : '扫码登录';
+        btn.onclick = async () => {
+          btn.disabled = true; btn.textContent = '生成中…';
+          try {
+            const r = await api('/api/wechat/login', { method: 'POST', body: {} });
+            renderWechatBox(box);
+            if (!r.qr) toast(r.hint || '未取到二维码，请重试', true);
+          } catch (e) {
+            toast(`发起登录失败：${e.message}`, true);
+            btn.disabled = false; btn.textContent = '扫码登录';
+          }
+        };
+        qrow.appendChild(qrWrap); qrow.appendChild(side);
+        box.appendChild(qrow); box.appendChild(btn);
+      }).catch((e) => {
+        box.textContent = `微信状态加载失败：${e.message}`;
+      });
+    }
+
+    function startWechatPoll() {
+      stopWechatPoll();
+      wechatPollTimer = setInterval(async () => {
+        try {
+          const st = await api('/api/wechat/login/poll');
+          const box = settingsBodyEl.querySelector('.wechat-box');
+          if (!box) return stopWechatPoll();
+          // 仅在状态有变化时重绘，避免闪烁
+          const sig = `${st.logged_in}|${st.status}|${st.qr ? st.qr.length : 0}`;
+          if (box.dataset.sig !== sig) {
+            box.dataset.sig = sig;
+            renderWechatBox(box);
+          }
+        } catch {}
+      }, 2000);
+    }
+
+    function stopWechatPoll() {
+      if (wechatPollTimer) { clearInterval(wechatPollTimer); wechatPollTimer = null; }
     }
 
     // 上移/下移按钮组（用于模型优先级排序）

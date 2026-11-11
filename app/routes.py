@@ -442,3 +442,67 @@ async def chat(req: ChatRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# 个人微信渠道：扫码登录状态（二维码在 WebUI 配置面板展示）
+# ---------------------------------------------------------------------------
+
+class WechatLoginRequest(BaseModel):
+    force: bool = False  # 预留：暂未用（token 存在时 start_login 直接返回已登录）
+
+
+@router.get("/wechat/status")
+async def wechat_status():
+    """微信渠道状态：是否启用、是否已登录、当前登录流程状态。"""
+    from . import wechat as wechat_mod
+    ch = config.get_channel("wechat")
+    enabled = bool(ch and ch.enabled)
+    svc = wechat_mod.get_wechat()
+    if not svc:
+        return {"enabled": enabled, "logged_in": False, "status": "idle", "qr": "", "hint": ""}
+    return {"enabled": enabled, **svc.login_state()}
+
+
+@router.post("/wechat/login")
+async def wechat_login(req: WechatLoginRequest):
+    """发起扫码登录，返回二维码（PNG data URL）供 WebUI 展示。"""
+    from . import wechat as wechat_mod
+    svc = wechat_mod.get_wechat()
+    if not svc:
+        raise HTTPException(status_code=400, detail="微信渠道未启用，请先在配置里开启并重启服务")
+    if req.force and svc.login_state()["logged_in"]:
+        svc.logout()
+    state = await svc.start_login()
+    return state
+
+
+@router.get("/wechat/login/poll")
+async def wechat_login_poll():
+    """轮询扫码登录进度（二维码刷新 / 已扫码 / 成功 / 失败）。"""
+    from . import wechat as wechat_mod
+    svc = wechat_mod.get_wechat()
+    if not svc:
+        return {"enabled": False, "logged_in": False, "status": "idle", "qr": "", "hint": ""}
+    return svc.login_state()
+
+
+@router.post("/wechat/login/cancel")
+async def wechat_login_cancel():
+    """放弃本次扫码登录。"""
+    from . import wechat as wechat_mod
+    svc = wechat_mod.get_wechat()
+    if svc:
+        svc.cancel_login()
+    return {"ok": True}
+
+
+@router.post("/wechat/logout")
+async def wechat_logout():
+    """退出登录，清除本地凭证。"""
+    from . import wechat as wechat_mod
+    svc = wechat_mod.get_wechat()
+    if not svc:
+        raise HTTPException(status_code=400, detail="微信渠道未启用")
+    svc.logout()
+    return {"ok": True, **svc.login_state()}

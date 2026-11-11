@@ -37,7 +37,7 @@
 - 用逆向的 iLink 纯 HTTP 协议（参考 nanobot），**无需本地微信客户端**，扫码登录后长轮询收发消息
 - 第一版只支持**文本收发**；每个微信联系人一个独立会话
 - `allowed_users` 白名单控制谁能对话；微信端遇 `execute_command` 高风险命令**自动拒绝**（无网页确认按钮）
-- 启用：`config.yaml` 里 `channels.wechat.enabled: true` 并重启，终端会打印二维码扫码登录
+- 启用：`config.yaml` 里 `channels.wechat.enabled: true` 并重启；在 **WebUI 设置面板 → 接入渠道 → 微信** 点「扫码登录」，二维码直接显示在页面里扫码即可（不再打印到终端）
 - ⚠️ 第三方逆向协议（非官方），无稳定性/封号保证，可能随时失效，自行判断风险
 
 ## 快速开始

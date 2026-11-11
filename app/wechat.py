@@ -59,6 +59,34 @@ DEFAULT_POLL_TIMEOUT_S = 35
 
 STATE_DIR = PROJECT_ROOT / "data" / "wechat"
 
+# 进程内单例：main.py 启动渠道时设置，/api/wechat/* 路由通过 get_wechat() 访问。
+# 这样 WebUI 触发的扫码登录和后台长轮询跑在同一个 service 实例上（共享 token/状态）。
+_instance: Optional["WechatService"] = None
+
+
+def get_wechat() -> Optional["WechatService"]:
+    return _instance
+
+
+def set_wechat(svc: Optional["WechatService"]) -> None:
+    global _instance
+    _instance = svc
+
+
+def _qr_png_data_url(content: str) -> str:
+    """把扫码内容渲染成 PNG 的 data URL，供 WebUI 直接 <img> 展示。
+
+    iLink 返回的 qrcode_img_content 是一段可被微信识别的内容/链接，
+    用 qrcode 库本地重绘成二维码图片（比终端 ASCII 友好得多）。
+    """
+    import io
+    import qrcode
+
+    img = qrcode.make(content, border=2)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
 
 def _build_client_version(version: str) -> int:
     """把语义化版本编码成 0x00MMNNPP。"""
@@ -104,6 +132,13 @@ class WechatService:
 
         self._client: Optional[httpx.AsyncClient] = None
         self._running = False
+
+        # WebUI 扫码登录会话状态（/api/wechat/* 读写，前端轮询展示）
+        self._login_status = "idle"   # idle | waiting | confirmed | failed
+        self._login_qr: str = ""       # 二维码 PNG data URL
+        self._login_hint = ""          # 给用户看的提示（如"已扫码，请在手机确认"）
+        self._login_task: Optional[asyncio.Task] = None
+        self._login_done: asyncio.Event = asyncio.Event()  # confirmed/failed 时 set
 
     # ------------------------------------------------------------------
     # 状态持久化（token / 游标 / context_token 落盘，重启免扫码）
@@ -157,21 +192,6 @@ class WechatService:
         if auth and self._token:
             h["Authorization"] = f"Bearer {self._token}"
         return h
-
-    async def _get(self, endpoint: str, params: dict | None = None, *, auth: bool = True,
-                   base_url: str | None = None) -> dict:
-        url = f"{(base_url or self._base_url).rstrip('/')}/{endpoint}"
-        resp = await self._client.get(url, params=params, headers=self._headers(auth=auth))
-        resp.raise_for_status()
-        return resp.json()
-
-    async def _post(self, endpoint: str, body: dict) -> dict:
-        if "base_info" not in body:
-            body["base_info"] = BASE_INFO
-        url = f"{self._base_url.rstrip('/')}/{endpoint}"
-        resp = await self._client.post(url, json=body, headers=self._headers())
-        resp.raise_for_status()
-        return resp.json()
 
     # ------------------------------------------------------------------
     # 扫码登录
@@ -242,11 +262,75 @@ class WechatService:
             await self._client.aclose()
             self._client = None
 
+    def login_state(self) -> dict:
+        """给 WebUI 轮询的登录状态快照。"""
+        return {
+            "status": self._login_status,
+            "qr": self._login_qr,
+            "hint": self._login_hint,
+            "logged_in": bool(self._token),
+        }
+
+    def _reset_login_state(self) -> None:
+        self._login_status = "idle"
+        self._login_qr = ""
+        self._login_hint = ""
+
+    async def start_login(self) -> dict:
+        """WebUI 触发扫码登录：起一个后台任务跑二维码流程，立即返回当前状态。
+
+        前端随后轮询 login_state() 拿二维码图和 confirmed/failed。重复调用会先取消上一次。
+        """
+        if self._token:
+            self._login_status = "confirmed"
+            self._login_done.set()
+            return self.login_state()
+        # 取消上一次还在跑的登录任务
+        if self._login_task and not self._login_task.done():
+            self._login_task.cancel()
+            try:
+                await self._login_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._login_done.clear()
+        self._login_task = asyncio.create_task(self._qr_login())
+        return self.login_state()
+
+    def cancel_login(self) -> None:
+        """放弃本次扫码（前端关闭弹窗/点取消）。"""
+        if self._login_task and not self._login_task.done():
+            self._login_task.cancel()
+        self._reset_login_state()
+
+    def logout(self) -> None:
+        """清除已存 token，下次需重新扫码。"""
+        self._token = ""
+        self._get_updates_buf = ""
+        self._context_tokens.clear()
+        self._context_token_at.clear()
+        sf = self._state_file()
+        if sf.exists():
+            sf.unlink()
+        self._login_status = "idle"
+        self._login_done.clear()
+        logger.info("微信已退出登录，清除本地凭证")
+
+    def _publish_qr(self, qr_content: str) -> None:
+        """把二维码渲染成 PNG data URL 供 WebUI 展示；失败则退回终端打印。"""
+        try:
+            self._login_qr = _qr_png_data_url(qr_content)
+        except Exception:
+            logger.exception("生成二维码图片失败，降级到终端打印")
+            self._login_qr = ""
+            self._print_qr(qr_content)
+
     async def _qr_login(self) -> bool:
+        self._login_status = "waiting"
+        self._login_hint = "请用微信扫码"
         try:
             refresh = 0
             qrcode_id, qr_url = await self._fetch_qr()
-            self._print_qr(qr_url)
+            self._publish_qr(qr_url)
             poll_base = self._base_url
             while self._running:
                 try:
@@ -269,51 +353,93 @@ class WechatService:
                         if status.get("baseurl"):
                             self._base_url = status["baseurl"]
                         self._save_state()
+                        self._login_status = "confirmed"
+                        self._login_hint = "登录成功"
+                        self._login_done.set()
                         logger.info("微信登录成功 user_id=%s", status.get("ilink_user_id", ""))
                         return True
+                    self._login_status = "failed"
+                    self._login_hint = "扫码确认但未返回凭证，请重试"
                     logger.error("扫码确认但未返回 bot_token")
+                    self._login_done.set()
                     return False
                 if st == "scaned_but_redirect":
                     host = str(status.get("redirect_host", "") or "").strip()
                     if host:
                         poll_base = host if host.startswith(("http://", "https://")) else f"https://{host}"
+                    self._login_hint = "已扫码，请在手机上确认登录"
                 elif st == "expired":
                     refresh += 1
                     if refresh > MAX_QR_REFRESH:
+                        self._login_status = "failed"
+                        self._login_hint = "二维码过期次数过多，请重新发起登录"
+                        self._login_done.set()
                         logger.warning("二维码过期次数过多，放弃登录")
                         return False
                     qrcode_id, qr_url = await self._fetch_qr()
-                    self._print_qr(qr_url)
+                    self._publish_qr(qr_url)
+                    self._login_hint = "二维码已刷新，请重新扫码"
                     poll_base = self._base_url
                 # wait -> 继续轮询
                 await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            self._reset_login_state()
+            raise
         except Exception:
             logger.exception("微信扫码登录失败")
+            self._login_status = "failed"
+            self._login_hint = "登录出错，请查看日志或重试"
+        self._login_done.set()
         return False
 
     # ------------------------------------------------------------------
     # 生命周期
     # ------------------------------------------------------------------
 
+    def _ensure_client(self) -> None:
+        """惰性建 HTTP 客户端——登录流程可能在 start() 之前就被 WebUI 触发。"""
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(self._poll_timeout_s + 10, connect=30),
+                follow_redirects=True,
+            )
+
+    async def _get(self, endpoint: str, params: dict | None = None, *, auth: bool = True,
+                   base_url: str | None = None) -> dict:
+        self._ensure_client()
+        url = f"{(base_url or self._base_url).rstrip('/')}/{endpoint}"
+        resp = await self._client.get(url, params=params, headers=self._headers(auth=auth))
+        resp.raise_for_status()
+        return resp.json()
+
+    async def _post(self, endpoint: str, body: dict) -> dict:
+        self._ensure_client()
+        if "base_info" not in body:
+            body["base_info"] = BASE_INFO
+        url = f"{self._base_url.rstrip('/')}/{endpoint}"
+        resp = await self._client.post(url, json=body, headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
+
     async def start(self) -> None:
-        """长轮询主循环。作为常驻 asyncio 任务运行。"""
+        """长轮询主循环。作为常驻 asyncio 任务运行。
+
+        有 token（配置或落盘）就直接收消息；否则**不再在终端扫码**，
+        而是等待用户在 WebUI 配置面板里发起扫码登录（start_login）。
+        """
         if not self._enabled:
             logger.info("微信渠道未启用，跳过启动")
             return
 
-        self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(self._poll_timeout_s + 10, connect=30), follow_redirects=True,
-        )
+        self._ensure_client()
         self._running = True
 
-        # 有 token（配置或落盘）就直接用；否则先扫码登录
         if not (self._token or self._load_state()):
-            logger.info("微信未登录，开始扫码登录…")
-            if not await self._qr_login():
-                logger.error("微信登录失败，渠道不启动。可重启重试或先在配置里填 token。")
+            logger.info("微信未登录，等待在 WebUI 配置面板扫码登录…")
+            await self._login_done.wait()
+            if not self._token:
+                logger.error("微信登录未完成，渠道不收消息。可在配置面板重试或先填 token。")
                 self._running = False
-                await self._client.aclose()
-                self._client = None
                 return
 
         logger.info("微信渠道启动，开始长轮询收消息…")
@@ -335,6 +461,8 @@ class WechatService:
 
     async def stop(self) -> None:
         self._running = False
+        if self._login_task and not self._login_task.done():
+            self._login_task.cancel()
         if self._client:
             await self._client.aclose()
             self._client = None
